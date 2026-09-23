@@ -15,7 +15,8 @@ local GameMap = require(Shared:WaitForChild("GameMap"))
 local MapLoader = require(Shared:WaitForChild("MapLoader"))
 local TerrainColors = require(Shared:WaitForChild("TerrainColors"))
 
-local MAP_ID = "World"
+-- Dev map selection: set a "Map" attribute on this script (e.g. "Europe").
+local MAP_ID = script:GetAttribute("Map") or "World"
 local MAX_TILE = 1024 -- EditableImage size limit
 local ZOOM_STEP = 1.15
 local MAX_ZOOM = 40 -- screen pixels per map tile
@@ -82,6 +83,7 @@ end
 
 local infoLabel = makeLabel("Info", Vector2.new(0, 0), UDim2.fromOffset(12, 60))
 local hoverLabel = makeLabel("Hover", Vector2.new(0, 1), UDim2.new(0, 12, 1, -12))
+hoverLabel.Text = "Drag to pan  ·  wheel / pinch to zoom"
 local creditLabel = makeLabel("Credit", Vector2.new(1, 1), UDim2.new(1, -12, 1, -12))
 creditLabel.TextSize = 12
 creditLabel.Text = `Map: {manifest.name} (c) OpenFront, CC BY-SA 4.0  ·  (c) OpenFront and Contributors`
