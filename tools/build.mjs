@@ -4,7 +4,7 @@
 //
 // Layout (Rojo-like):
 //   src/shared/**           -> build/Shared.rbxmx   (Folder "Shared", import into ReplicatedStorage)
-//   src/client/*.client.luau -> build/Client.rbxmx  (LocalScripts, import into StarterPlayerScripts)
+//   src/client/**            -> build/Client.rbxmx  (LocalScripts + modules, import into StarterPlayerScripts)
 //   src/server/**            -> build/Server.rbxmx  (Scripts + Core modules, import into ServerScriptService)
 //   tests/**                 -> build/Tests.rbxmx   (Folder "Tests", import into ServerStorage)
 //
@@ -59,17 +59,17 @@ function sharedTree(dir, name) {
   return item("Folder", name, children);
 }
 
-// Server tree: directories -> Folders, *.server.luau -> Scripts,
+// Script tree: directories -> Folders, *<scriptSuffix> -> scriptClass,
 // other *.luau -> ModuleScripts. Returns the top-level items.
-function serverTree(dir) {
+function scriptTree(dir, scriptSuffix, scriptClass) {
   if (!fs.existsSync(dir)) return [];
   const items = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      items.push(item("Folder", entry.name, serverTree(full)));
-    } else if (entry.name.endsWith(".server.luau")) {
-      items.push(item("Script", entry.name.slice(0, -".server.luau".length), [], read(full)));
+      items.push(item("Folder", entry.name, scriptTree(full, scriptSuffix, scriptClass)));
+    } else if (entry.name.endsWith(scriptSuffix)) {
+      items.push(item(scriptClass, entry.name.slice(0, -scriptSuffix.length), [], read(full)));
     } else if (entry.name.endsWith(".luau")) {
       items.push(item("ModuleScript", entry.name.slice(0, -".luau".length), [], read(full)));
     }
@@ -77,14 +77,6 @@ function serverTree(dir) {
   return items;
 }
 
-function scripts(dir, suffix, className) {
-  if (!fs.existsSync(dir)) return [];
-  return fs
-    .readdirSync(dir)
-    .filter((f) => f.endsWith(suffix))
-    .sort()
-    .map((f) => item(className, f.slice(0, -suffix.length), [], read(path.join(dir, f))));
-}
 
 function write(name, items) {
   const file = path.join(buildDir, name);
@@ -94,7 +86,7 @@ function write(name, items) {
 
 fs.mkdirSync(buildDir, { recursive: true });
 write("Shared.rbxmx", [sharedTree(path.join(root, "src/shared"), "Shared")]);
-write("Client.rbxmx", scripts(path.join(root, "src/client"), ".client.luau", "LocalScript"));
-write("Server.rbxmx", serverTree(path.join(root, "src/server")));
+write("Client.rbxmx", scriptTree(path.join(root, "src/client"), ".client.luau", "LocalScript"));
+write("Server.rbxmx", scriptTree(path.join(root, "src/server"), ".server.luau", "Script"));
 // Golden-vector specs; import into ServerStorage (never replicated to players).
 write("Tests.rbxmx", [sharedTree(path.join(root, "tests"), "Tests")]);

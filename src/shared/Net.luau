@@ -1,0 +1,128 @@
+-- Remote events shared by server and client, plus the binary packing used on
+-- the wire. The server simulates; clients only receive what changed.
+--
+-- Server -> client
+--   GameState(state)   full snapshot on join: map, tick, phase, roster, tiles
+--   Roster(players)    players added since the last roster message
+--   Tick(buf)          tile ownership changes for one tick (packed, see below)
+--   Stats(buf)         per-player tiles / troops / gold (every few ticks)
+--   Event(evt)         game events: spawn phase end, winner, messages
+-- Client -> server
+--   Intent(intent)     { type = "spawn", tile } | { type = "attack", targetSmallID, ratio }
+--                      | { type = "cancel_attack", attackID }
+
+local RunService = game:GetService("RunService")
+local EncodingService = game:GetService("EncodingService")
+
+local Net = {}
+
+local NAMES = { "GameState", "Roster", "Tick", "Stats", "Event", "Intent" }
+
+local folder: Folder
+if RunService:IsServer() then
+	folder = script.Parent:FindFirstChild("Remotes") :: Folder
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = "Remotes"
+		for _, name in NAMES do
+			local e = Instance.new("RemoteEvent")
+			e.Name = name
+			e.Parent = folder
+		end
+		folder.Parent = script.Parent
+	end
+else
+	folder = script.Parent:WaitForChild("Remotes") :: Folder
+end
+
+for _, name in NAMES do
+	Net[name] = folder:WaitForChild(name) :: RemoteEvent
+end
+
+-- Payloads above this size are zstd-compressed.
+local COMPRESS_THRESHOLD = 1024
+
+local function wrap(payload: buffer): buffer
+	local len = buffer.len(payload)
+	if len > COMPRESS_THRESHOLD then
+		local z = EncodingService:CompressBuffer(payload, Enum.CompressionAlgorithm.Zstd, 1)
+		if buffer.len(z) < len then
+			local out = buffer.create(buffer.len(z) + 1)
+			buffer.writeu8(out, 0, 1)
+			buffer.copy(out, 1, z)
+			return out
+		end
+	end
+	local out = buffer.create(len + 1)
+	buffer.writeu8(out, 0, 0)
+	buffer.copy(out, 1, payload)
+	return out
+end
+
+local function unwrap(buf: buffer): buffer
+	local body = buffer.create(buffer.len(buf) - 1)
+	buffer.copy(body, 0, buf, 1)
+	if buffer.readu8(buf, 0) == 1 then
+		return EncodingService:DecompressBuffer(body, Enum.CompressionAlgorithm.Zstd)
+	end
+	return body
+end
+Net.wrap, Net.unwrap = wrap, unwrap
+
+-- Tick: u32 tick, u32 count, then count x (u32 tile, u16 state).
+function Net.packTiles(tick: number, tiles: { number }, states: { number }): buffer
+	local n = #tiles
+	local b = buffer.create(8 + n * 6)
+	buffer.writeu32(b, 0, tick)
+	buffer.writeu32(b, 4, n)
+	local o = 8
+	for i = 1, n do
+		buffer.writeu32(b, o, tiles[i])
+		buffer.writeu16(b, o + 4, states[i])
+		o += 6
+	end
+	return wrap(b)
+end
+
+-- Calls fn(tile, state) for each change; returns the tick.
+function Net.unpackTiles(buf: buffer, fn: (number, number) -> ()): number
+	local b = unwrap(buf)
+	local tick = buffer.readu32(b, 0)
+	local n = buffer.readu32(b, 4)
+	local o = 8
+	for _ = 1, n do
+		fn(buffer.readu32(b, o), buffer.readu16(b, o + 4))
+		o += 6
+	end
+	return tick
+end
+
+-- Stats: u32 tick, u16 count, then count x (u16 smallID, u32 tiles, f64 troops, f64 gold).
+function Net.packStats(tick: number, rows: { { number } }): buffer
+	local b = buffer.create(6 + #rows * 22)
+	buffer.writeu32(b, 0, tick)
+	buffer.writeu16(b, 4, #rows)
+	local o = 6
+	for _, r in rows do
+		buffer.writeu16(b, o, r[1])
+		buffer.writeu32(b, o + 2, r[2])
+		buffer.writef64(b, o + 6, r[3])
+		buffer.writef64(b, o + 14, r[4])
+		o += 22
+	end
+	return wrap(b)
+end
+
+function Net.unpackStats(buf: buffer, fn: (number, number, number, number) -> ()): number
+	local b = unwrap(buf)
+	local tick = buffer.readu32(b, 0)
+	local n = buffer.readu16(b, 4)
+	local o = 6
+	for _ = 1, n do
+		fn(buffer.readu16(b, o), buffer.readu32(b, o + 2), buffer.readf64(b, o + 6), buffer.readf64(b, o + 14))
+		o += 22
+	end
+	return tick
+end
+
+return Net
