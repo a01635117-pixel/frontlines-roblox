@@ -15,6 +15,7 @@ local Util = require(Shared.Util)
 local GameTypes = require(script.Parent.GameTypes)
 local PlayerImpl = require(script.Parent.PlayerImpl)
 local Stats = require(script.Parent.Stats)
+local WaterManager = require(script.Parent.Pathfinding.WaterManager)
 
 local PlayerType = GameTypes.PlayerType
 local GameMode = GameTypes.GameMode
@@ -75,6 +76,7 @@ function GameImpl.new(humans, nations, map, miniGameMap, config, teamGameSpawnAr
 		_stats = Stats.new(),
 	}, GameImpl)
 
+	self._waterManager = WaterManager.new(map, miniGameMap, config:disableNavMesh())
 	if config:gameConfig().gameMode == GameMode.Team then
 		self:_populateTeams()
 	end
@@ -177,7 +179,28 @@ function GameImpl:queueWaterConversion(tile: number)
 		self:setFallout(tile, true)
 		return
 	end
-	error("TODO(port): WaterManager (water nukes)")
+	self._waterManager:queueTile(tile)
+end
+
+-- Water navigation (WaterManager) ------------------------------------------------
+
+function GameImpl:miniWaterHPA()
+	return self._waterManager:miniWaterHPA()
+end
+function GameImpl:miniWaterGraph()
+	return self._waterManager:miniWaterGraph()
+end
+function GameImpl:waterGraphVersion(): number
+	return self._waterManager:waterGraphVersion()
+end
+function GameImpl:getWaterComponent(tile: number): number?
+	return self._waterManager:getWaterComponent(tile)
+end
+function GameImpl:hasWaterComponent(tile: number, component: number): boolean
+	return self._waterManager:hasWaterComponent(tile, component)
+end
+function GameImpl:getWaterComponentSize(tile: number): number?
+	return self._waterManager:getWaterComponentSize(tile)
 end
 
 -- Units ---------------------------------------------------------------------------
@@ -337,7 +360,10 @@ function GameImpl:executeNextTick()
 		end
 	end
 
-	-- TODO(port): WaterManager tick (water nukes).
+	-- Flush pending water conversions + throttled graph rebuild.
+	for _, tile in self._waterManager:tick(self._ticks) do
+		self:_recordTileUpdate(tile)
+	end
 	self._ticks += 1
 	return self._updates
 end
