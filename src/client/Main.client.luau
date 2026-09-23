@@ -18,6 +18,7 @@ local Hud = require(script.Parent:WaitForChild("Hud"))
 local MapCamera = require(script.Parent:WaitForChild("MapCamera"))
 local NameLayer = require(script.Parent:WaitForChild("NameLayer"))
 local TerritoryRenderer = require(script.Parent:WaitForChild("TerritoryRenderer"))
+local UnitLayer = require(script.Parent:WaitForChild("UnitLayer"))
 
 local player = Players.LocalPlayer
 workspace.CurrentCamera.CameraType = Enum.CameraType.Scriptable
@@ -51,8 +52,10 @@ local W, H = gameMap:width(), gameMap:height()
 local camera = MapCamera.new(background, W, H)
 local renderer = TerritoryRenderer.new(camera, gameMap)
 local nameLayer = NameLayer.new(background, camera)
+local unitLayer = UnitLayer.new(background, camera, gameMap)
 camera.onChanged = function()
 	nameLayer:refresh()
+	unitLayer:render()
 end
 local theme = ColorAllocator.Theme.new()
 
@@ -63,6 +66,8 @@ local inSpawnPhase = state.inSpawnPhase
 local spawnPhaseTurns = state.spawnPhaseTurns
 local tickBase, tickClock = state.tick, os.clock()
 local gameOver = false
+local haveSpawned = false -- seen our own territory at least once
+local shownDeath = false
 
 local function addPlayers(entries)
 	for _, e in entries do
@@ -70,6 +75,7 @@ local function addPlayers(entries)
 		local c = theme:territoryColor(e.id, e.type)
 		renderer:setPlayerColor(e.smallID, c.rgb, c.border)
 		nameLayer:setPlayer(e.smallID, e.name, c.rgb, e.type == "BOT")
+		unitLayer:setOwnerColor(e.smallID, c.rgb)
 		if e.clientID == state.yourClientID then
 			mySmallID = e.smallID
 		end
@@ -81,6 +87,9 @@ renderer:loadState(Net.unwrap(state.tiles))
 Net.unpackNames(state.names, function(smallID, x, y, size)
 	nameLayer:setPlacement(smallID, x, y, size)
 end)
+for _, u in state.units or {} do
+	unitLayer:apply(u)
+end
 camera:fit()
 
 local function estimatedTick(): number
@@ -105,6 +114,12 @@ Net.Names.OnClientEvent:Connect(function(buf)
 	Net.unpackNames(buf, function(smallID, x, y, size)
 		nameLayer:setPlacement(smallID, x, y, size)
 	end)
+end)
+
+Net.Units.OnClientEvent:Connect(function(list)
+	for _, u in list do
+		unitLayer:apply(u)
+	end
 end)
 
 Net.Tick.OnClientEvent:Connect(function(buf)
@@ -154,6 +169,13 @@ Net.Stats.OnClientEvent:Connect(function(buf)
 	local mine = mySmallID and stats[mySmallID]
 	if mine then
 		hud:setMyStats(mine.troops, maxTroopsForHuman(mine.tiles), mine.gold)
+		if mine.tiles > 0 then
+			haveSpawned = true
+		elseif haveSpawned and not inSpawnPhase and not shownDeath and not gameOver then
+			-- Upstream WinModal: shown once when our player is no longer alive.
+			shownDeath = true
+			hud:showModal("You died", "Spectate")
+		end
 	end
 	refreshBoard()
 end)
@@ -163,7 +185,11 @@ Net.Event.OnClientEvent:Connect(function(evt)
 		inSpawnPhase = false
 	elseif evt.type == "Win" then
 		gameOver = true
-		hud:showWinner(if evt.winnerSmallID == mySmallID then "You won!" else `{evt.winnerName} has won the game`)
+		if evt.winnerSmallID ~= nil and evt.winnerSmallID == mySmallID then
+			hud:showModal("You Won!", "Keep Playing", true)
+		else
+			hud:showModal(`{evt.winnerName} has won!`, "Keep Playing")
+		end
 	end
 end)
 
@@ -182,20 +208,17 @@ camera.onClick = function(p: Vector2)
 		return
 	end
 	local tile = tileAtScreen(p)
-	if tile == nil or not gameMap:isLand(tile) or gameMap:isImpassable(tile) then
-		return -- TODO(port): boats (clicking water / across water)
+	if tile == nil then
+		return
 	end
-	local owner = renderer:ownerAt(tile)
 	if inSpawnPhase then
-		if owner == 0 then
+		if gameMap:isLand(tile) and not gameMap:isImpassable(tile) and renderer:ownerAt(tile) == 0 then
 			Net.Intent:FireServer({ type = "spawn", tile = tile })
 		end
 		return
 	end
-	if owner == mySmallID then
-		return
-	end
-	Net.Intent:FireServer({ type = "attack", targetSmallID = owner, ratio = hud.ratio })
+	-- The server decides land attack vs boat, exactly like the upstream client.
+	Net.Intent:FireServer({ type = "click", tile = tile, ratio = hud.ratio })
 end
 
 camera.onHover = function(p: Vector2)
@@ -220,11 +243,16 @@ end
 
 RunService.RenderStepped:Connect(function()
 	renderer:flush()
+	unitLayer:render()
 	if inSpawnPhase and not gameOver then
 		local left = math.max(1, math.ceil((spawnPhaseTurns - estimatedTick()) / 10))
 		local mine = mySmallID and stats[mySmallID]
 		local chosen = mine ~= nil and mine.tiles > 0
-		hud:setCountdown(left, if chosen then "Spawn chosen — get ready" else "Click the map to choose where to start")
+		if state.hasSpawnTimer == false then
+			hud:setCountdown("", "Click the map to choose where to start")
+		else
+			hud:setCountdown(left, if chosen then "Spawn chosen — get ready" else "Click the map to choose where to start")
+		end
 	else
 		hud:setCountdown(nil)
 	end

@@ -223,17 +223,43 @@ function Hud.new(gui: ScreenGui)
 	hover.Visible = false
 	self.hover, self.hoverText = hover, hoverText
 
-	-- Winner banner.
-	local win = panel(gui, "Winner")
-	win.AnchorPoint = Vector2.new(0.5, 0.5)
-	win.Position = UDim2.fromScale(0.5, 0.4)
-	win.AutomaticSize = Enum.AutomaticSize.XY
-	padding(win, 24)
-	local winText = label(win, "Text", "", 32, FONT_BOLD)
-	winText.AutomaticSize = Enum.AutomaticSize.XY
-	winText.TextXAlignment = Enum.TextXAlignment.Center
-	win.Visible = false
-	self.win, self.winText = win, winText
+	-- End-of-life modal (upstream WinModal): "You died" / winner, one button.
+	local modal = panel(gui, "EndModal")
+	modal.AnchorPoint = Vector2.new(0.5, 0.5)
+	modal.Position = UDim2.fromScale(0.5, 0.42)
+	modal.Size = UDim2.fromOffset(360, 0)
+	modal.AutomaticSize = Enum.AutomaticSize.Y
+	modal.ZIndex = 20
+	padding(modal, 22)
+	local modalLayout = Instance.new("UIListLayout")
+	modalLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	modalLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	modalLayout.Padding = UDim.new(0, 16)
+	modalLayout.Parent = modal
+	local modalTitle = label(modal, "Title", "", 34, FONT_BOLD)
+	modalTitle.Size = UDim2.new(1, 0, 0, 40)
+	modalTitle.TextXAlignment = Enum.TextXAlignment.Center
+	modalTitle.TextWrapped = true
+	modalTitle.ZIndex = 21
+	modalTitle.LayoutOrder = 1
+	local modalButton = Instance.new("TextButton")
+	modalButton.Name = "Button"
+	modalButton.Size = UDim2.fromOffset(200, 44)
+	modalButton.BackgroundColor3 = ACCENT
+	modalButton.BorderSizePixel = 0
+	modalButton.Font = FONT_BOLD
+	modalButton.TextSize = 18
+	modalButton.TextColor3 = Color3.new(1, 1, 1)
+	modalButton.AutoButtonColor = true
+	modalButton.ZIndex = 21
+	modalButton.LayoutOrder = 2
+	corner(modalButton, 8)
+	modalButton.Parent = modal
+	modalButton.Activated:Connect(function()
+		modal.Visible = false
+	end)
+	modal.Visible = false
+	self.modal, self.modalTitle, self.modalButton = modal, modalTitle, modalButton
 
 	return self
 end
@@ -282,9 +308,14 @@ function Hud:setHover(text: string?)
 	end
 end
 
-function Hud:showWinner(text: string)
-	self.winText.Text = text
-	self.win.Visible = true
+-- Modal with a title and one dismiss button (upstream WinModal texts:
+-- "You died" + "Spectate", "You Won!" / "X has won!" + "Keep Playing").
+-- TODO(port): "Play Again" once there is a lobby to return to.
+function Hud:showModal(title: string, buttonText: string, isWin: boolean?)
+	self.modalTitle.Text = title
+	self.modalTitle.TextColor3 = if isWin then Color3.fromRGB(255, 214, 90) else TEXT
+	self.modalButton.Text = buttonText
+	self.modal.Visible = true
 end
 
 return Hud

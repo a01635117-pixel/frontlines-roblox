@@ -48,7 +48,9 @@ local runner = GameRunner.create({
 		difficulty = "Medium",
 		donateGold = false,
 		donateTroops = false,
-		gameType = "Public",
+		-- Solo in Studio behaves like upstream Singleplayer: no spawn timer, the
+		-- spawn phase ends when the player picks a location.
+		gameType = if RunService:IsStudio() and #players == 1 then "Singleplayer" else "Public",
 		gameMode = "Free For All",
 		gameMapSize = "Compact",
 		bots = BOTS,
@@ -140,10 +142,20 @@ local function fullState(forPlayer: Player)
 		tick = mg:ticks(),
 		inSpawnPhase = mg:inSpawnPhase(),
 		spawnPhaseTurns = mg:config():numSpawnPhaseTurns(),
+		-- Singleplayer has no spawn timer (upstream GameRunner.init).
+		hasSpawnTimer = mg:config():gameConfig().gameType ~= "Singleplayer",
 		yourClientID = clientIDOf(forPlayer),
 		players = roster,
 		tiles = Net.wrap(copy),
 		names = Net.packNames(nameRows()),
+		units = (function()
+			local list = {}
+			for _, u in mg:units() do
+				local up = u:toUpdate()
+				table.insert(list, { id = up.id, unitType = up.unitType, ownerID = up.ownerID, pos = up.pos, troops = up.troops, isActive = true, isRetreating = up.isRetreating })
+			end
+			return list
+		end)(),
 	}
 end
 
@@ -215,17 +227,59 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 		end
 		-- Troops are computed when the intent is applied (see tick loop).
 		table.insert(pending, { type = "attack", clientID = clientID, targetID = targetID, ratio = ratio })
+	elseif t == "click" then
+		-- Upstream ClientGameRunner.inputEvent: land attack when the tile is
+		-- attackable, else an auto-boat when a launch shore is within 100 tiles.
+		local tile, ratio = intent.tile, intent.ratio
+		if not isInt(tile) or not mg:isValidRef(tile) or type(ratio) ~= "number" or ratio ~= ratio or ratio <= 0 or ratio > 1 then
+			return
+		end
+		if mg:inSpawnPhase() then
+			return
+		end
+		if me:canAttack(tile) then
+			local owner = mg:owner(tile)
+			table.insert(pending, { type = "attack", clientID = clientID, targetID = owner:id(), ratio = ratio })
+		elseif mg:isLand(tile) then
+			local spawn = me:canBuild("Transport", tile)
+			if spawn ~= false and mg:euclideanDistSquared(tile, spawn) < 100 * 100 then
+				table.insert(pending, { type = "boat", clientID = clientID, dst = tile, ratio = ratio })
+			end
+		end
 	elseif t == "cancel_attack" then
 		if type(intent.attackID) == "string" and #intent.attackID <= 16 then
 			table.insert(pending, { type = "cancel_attack", clientID = clientID, attackID = intent.attackID })
+		end
+	elseif t == "cancel_boat" then
+		if isInt(intent.unitID) then
+			table.insert(pending, { type = "cancel_boat", clientID = clientID, unitID = intent.unitID })
 		end
 	end
 end)
 
 -- Tick loop -----------------------------------------------------------------------
 
+-- Latest state per unit this tick, sent as one Units message.
+local unitChanges, unitOrder = {}, {}
+
 local function handleUpdates(updates)
+	table.clear(unitChanges)
+	table.clear(unitOrder)
 	for _, u in updates do
+		if u.type == "Unit" then
+			if unitChanges[u.id] == nil then
+				table.insert(unitOrder, u.id)
+			end
+			unitChanges[u.id] = {
+				id = u.id,
+				unitType = u.unitType,
+				ownerID = u.ownerID,
+				pos = u.pos,
+				troops = u.troops,
+				isActive = u.isActive,
+				isRetreating = u.isRetreating,
+			}
+		end
 		if u.type == "SpawnPhaseEnd" then
 			Net.Event:FireAllClients({ type = "SpawnPhaseEnd", tick = u.startTick })
 		elseif u.type == "Win" then
@@ -239,6 +293,13 @@ local function handleUpdates(updates)
 			Net.Event:FireAllClients({ type = "Conquest", conquerorId = u.conquerorId, conqueredId = u.conqueredId })
 		end
 	end
+	if #unitOrder > 0 then
+		local list = table.create(#unitOrder)
+		for i, id in unitOrder do
+			list[i] = unitChanges[id]
+		end
+		Net.Units:FireAllClients(list)
+	end
 end
 
 local lastTile, order, states = {}, {}, {}
@@ -249,9 +310,9 @@ local function runTick()
 	pending = {}
 	table.clear(intentCount)
 	for _, intent in intents do
-		if intent.type == "attack" then
+		if (intent.type == "attack" or intent.type == "boat") and intent.ratio then
 			local me = mg:playerByClientID(intent.clientID)
-			intent.troops = if me then math.floor(me:troops() * intent.ratio) else 0
+			intent.troops = if me then me:troops() * intent.ratio else 0
 		end
 	end
 

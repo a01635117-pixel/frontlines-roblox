@@ -7,9 +7,11 @@
 --   Tick(buf)          tile ownership changes for one tick (packed, see below)
 --   Stats(buf)         per-player tiles / troops / gold (every few ticks)
 --   Names(buf)         name placements (NameBoxCalculator), when recomputed
+--   Units(list)        unit changes this tick: { id, unitType, ownerID, pos, troops, isActive, isRetreating }
 --   Event(evt)         game events: spawn phase end, winner, messages
 -- Client -> server
---   Intent(intent)     { type = "spawn", tile } | { type = "attack", targetSmallID, ratio }
+--   Intent(intent)     { type = "spawn", tile } | { type = "click", tile, ratio }
+--                      | { type = "attack", targetSmallID, ratio } | { type = "cancel_boat", unitID }
 --                      | { type = "cancel_attack", attackID }
 
 local RunService = game:GetService("RunService")
@@ -17,7 +19,7 @@ local EncodingService = game:GetService("EncodingService")
 
 local Net = {}
 
-local NAMES = { "GameState", "Roster", "Tick", "Stats", "Names", "Event", "Intent" }
+local NAMES = { "GameState", "Roster", "Tick", "Stats", "Names", "Units", "Event", "Intent" }
 
 local folder: Folder
 if RunService:IsServer() then
