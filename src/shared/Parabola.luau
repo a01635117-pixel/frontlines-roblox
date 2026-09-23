@@ -1,12 +1,16 @@
 -- Rocket flight paths: port of upstream utilities/Line.ts
 -- (DistanceBasedBezierCurve) and pathfinding/PathFinder.Parabola.ts.
+-- Shared: the server steps nukes with it and clients replay the same path
+-- from a motion plan (src, dst, speed, direction, start tick).
 --
 -- The curve is walked with 8-bit fixed-point integers (x256) and JS `>>`
 -- shifts; every value stays non-negative and far below 2^31, so `>> n` is
 -- floor division and plain Luau arithmetic reproduces it exactly.
 
-local Util = require(game:GetService("ReplicatedStorage").Shared.Util)
-local PathStatus = require(script.Parent.PathFinder).PathStatus
+local Util = require(script.Parent.Util)
+
+-- Same values as the server's PathFinder.PathStatus.
+local PathStatus = table.freeze({ NEXT = 0, COMPLETE = 2, NOT_FOUND = 3 })
 
 local within = Util.within
 
@@ -143,6 +147,7 @@ local PARABOLA_MIN_HEIGHT = 50
 
 local Parabola = {}
 Parabola.Bezier = Bezier
+Parabola.PathStatus = PathStatus
 
 -- options: { increment, distanceBasedHeight = true, directionUp = true, ignoreMapBounds = false }
 function Parabola.controlPoints(gameMap, from: number, to: number, options)
@@ -209,6 +214,19 @@ end
 
 function Finder:currentIndex(): number
 	return if self.curve then self.curve:getCurrentIndex() else 0
+end
+
+-- Tiles a nuke visits, one per tick from its start tick (the path upstream's
+-- recordMotionPlan replays): src, then every next() until COMPLETE.
+function Parabola.motionPath(gameMap, src: number, dst: number, speed: number, directionUp: boolean?): { number }
+	local finder = Parabola.new(gameMap, { increment = speed, directionUp = directionUp })
+	local path = { src }
+	local r = finder:next(src, dst, speed)
+	while r.status == PathStatus.NEXT do
+		table.insert(path, r.node)
+		r = finder:next(src, dst, speed)
+	end
+	return path
 end
 
 return Parabola

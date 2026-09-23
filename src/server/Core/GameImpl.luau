@@ -197,8 +197,20 @@ function GameImpl:drainNukeImpacts(): { number }
 	return tiles
 end
 
--- Client-side motion plans are not used: unit positions are replicated.
-function GameImpl:recordMotionPlan(_record) end
+-- Nuke motion plans for clients: unitId -> { src, dst, speed, directionUp, startTick }.
+-- Not part of the simulation state.
+function GameImpl:recordMotionPlan(record)
+	self._motionPlans = self._motionPlans or {}
+	self._motionPlans[record.unitId] = record
+end
+function GameImpl:motionPlan(unitId: number)
+	return self._motionPlans and self._motionPlans[unitId]
+end
+function GameImpl:clearMotionPlan(unitId: number)
+	if self._motionPlans then
+		self._motionPlans[unitId] = nil
+	end
+end
 
 -- Water navigation (WaterManager) ------------------------------------------------
 

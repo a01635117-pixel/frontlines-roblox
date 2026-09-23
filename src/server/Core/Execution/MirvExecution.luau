@@ -8,7 +8,7 @@ local PseudoRandom = require(Shared.PseudoRandom)
 local Util = require(Shared.Util)
 local Core = script.Parent.Parent
 local GameTypes = require(Core.GameTypes)
-local Parabola = require(Core.Pathfinding.Parabola)
+local Parabola = require(Shared.Parabola)
 local PathStatus = require(Core.Pathfinding.PathFinder).PathStatus
 local NukeExecution = require(script.Parent.NukeExecution)
 

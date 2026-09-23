@@ -9,7 +9,7 @@ local PseudoRandom = require(Shared.PseudoRandom)
 local Core = script.Parent.Parent
 local GameTypes = require(Core.GameTypes)
 local ExecUtil = require(script.Parent.ExecUtil)
-local Parabola = require(Core.Pathfinding.Parabola)
+local Parabola = require(Shared.Parabola)
 local PathStatus = require(Core.Pathfinding.PathFinder).PathStatus
 
 local UnitType = GameTypes.UnitType
@@ -158,6 +158,16 @@ function NukeExecution:tick(ticks: number)
 			trajectory = self:_getTrajectory(self.dst),
 		})
 		self.nuke:updateNukeState({ waitTicks = self.waitTicks })
+		-- Clients replay the flight from this plan (recordMotionPlan) instead
+		-- of receiving a position update every tick.
+		mg:recordMotionPlan({
+			unitId = self.nuke:id(),
+			src = self.src,
+			dst = self.dst,
+			speed = self.speed,
+			directionUp = self.rocketDirectionUp,
+			startTick = ticks + self.waitTicks + 1,
+		})
 		if self.nuke:type() ~= UnitType.MIRVWarhead then
 			self:_maybeBreakAlliances()
 		end

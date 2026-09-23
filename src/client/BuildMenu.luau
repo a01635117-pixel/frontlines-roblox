@@ -53,7 +53,9 @@ local HIGHLIGHT_UNIT = {
 	mirv = "MIRV",
 }
 
-local RANGE = { ["Defense Post"] = 30 } -- Config.defensePostRange()
+-- Ghost range circle (BuildPreviewController): defensePostRange, samRange(1),
+-- nuke outer blast radius.
+local RANGE = { ["Defense Post"] = 30, ["SAM Launcher"] = 70, ["Atom Bomb"] = 30, ["Hydrogen Bomb"] = 100 }
 local QUERY_INTERVAL = 0.12 -- s between ghost availability queries
 local OK_COLOR = C.green400
 local UPGRADE_COLOR = C.blue400
@@ -417,8 +419,8 @@ function BuildMenu:_updateGhost()
 	self.ghostStroke.Color = color
 	self.ghost.BackgroundColor3 = self.deps.myColor() or C.gray800
 	if info then
-		local mult = if info.canUpgrade then self.multiplier else 1
-		local cost = bulkCost(info, mult)
+		local mult = if info.canUpgrade or self.selected == "Atom Bomb" then self.multiplier else 1
+		local cost = if self.selected == "Atom Bomb" then info.cost * mult else bulkCost(info, mult)
 		self.ghostCaption.Text = (if mult > 1 then `x{mult} ` else "") .. Format.renderNumber(cost)
 		self.ghostCaption.TextColor3 = if cost <= self.gold then C.yellow300 else BAD_COLOR
 	else
@@ -516,7 +518,9 @@ function BuildMenu:click(tile: number): boolean
 		self.deps.net.Intent:FireServer({ type = "place", unit = unit, tile = tile, amount = self.multiplier })
 		self:select(nil)
 	elseif info.canBuild then
-		self.deps.net.Intent:FireServer({ type = "place", unit = unit, tile = tile })
+		-- Atom bombs honour the x5 multiplier (bulk launch), like upstream.
+		local amount = if unit == "Atom Bomb" then self.multiplier else nil
+		self.deps.net.Intent:FireServer({ type = "place", unit = unit, tile = tile, amount = amount })
 		if unit ~= "Atom Bomb" and unit ~= "Hydrogen Bomb" then -- shouldPreserveGhostAfterBuild
 			self:select(nil)
 		end

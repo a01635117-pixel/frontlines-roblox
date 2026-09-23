@@ -101,6 +101,11 @@ local function estimatedTick(): number
 	return tickBase + math.floor((os.clock() - tickClock) * 10)
 end
 
+-- Fractional tick for motion-plan playback (capped one tick ahead of the last update).
+unitLayer.tickNow = function(): number
+	return tickBase + math.min((os.clock() - tickClock) * 10, 1.5)
+end
+
 local terrainNames = {}
 for name, value in GameMap.TerrainType do
 	terrainNames[value] = name

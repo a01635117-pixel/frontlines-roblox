@@ -199,7 +199,7 @@ local function fullState(forPlayer: Player)
 			local list = {}
 			for _, u in mg:units() do
 				local up = u:toUpdate()
-				table.insert(list, { id = up.id, unitType = up.unitType, ownerID = up.ownerID, pos = up.pos, troops = up.troops, isActive = true, isRetreating = up.isRetreating, level = up.level, underConstruction = up.underConstruction, markedForDeletion = up.markedForDeletion ~= false })
+				table.insert(list, { id = up.id, unitType = up.unitType, ownerID = up.ownerID, pos = up.pos, troops = up.troops, isActive = true, isRetreating = up.isRetreating, level = up.level, underConstruction = up.underConstruction, markedForDeletion = up.markedForDeletion ~= false, targetTile = up.targetTile, plan = mg:motionPlan(up.id) })
 			end
 			return list
 		end)(),
@@ -380,7 +380,8 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 			local amount = if intent.amount == 5 then 5 else 1 -- uiState.upgradeMultiplier
 			table.insert(pending, { type = "upgrade_structure", clientID = clientID, unitId = bu.canUpgrade, amount = amount })
 		elseif bu.canBuild ~= false then
-			table.insert(pending, { type = "build_unit", clientID = clientID, unit = unitType, tile = tile })
+			local amount = if unitType == "Atom Bomb" and intent.amount == 5 then 5 else nil
+			table.insert(pending, { type = "build_unit", clientID = clientID, unit = unitType, tile = tile, amount = amount })
 		end
 	elseif t == "delete_at" then
 		if isInt(intent.tile) and mg:isValidRef(intent.tile) then
@@ -464,12 +465,25 @@ end
 
 -- Latest state per unit this tick, sent as one Units message.
 local unitChanges, unitOrder = {}, {}
+-- Units flying on a motion plan (nukes): sent once with the plan, then only
+-- when they end; clients replay the path themselves.
+local planSent = {}
 
 local function handleUpdates(updates)
 	table.clear(unitChanges)
 	table.clear(unitOrder)
 	for _, u in updates do
 		if u.type == "Unit" then
+			local plan = mg:motionPlan(u.id)
+			if plan and u.isActive and planSent[u.id] and unitChanges[u.id] == nil then
+				continue -- in flight: the client already has the plan
+			end
+			if not u.isActive then
+				planSent[u.id] = nil
+				mg:clearMotionPlan(u.id)
+			elseif plan then
+				planSent[u.id] = true
+			end
 			if unitChanges[u.id] == nil then
 				table.insert(unitOrder, u.id)
 			end
@@ -484,6 +498,9 @@ local function handleUpdates(updates)
 				level = u.level,
 				underConstruction = u.underConstruction,
 				markedForDeletion = u.markedForDeletion ~= false,
+				reachedTarget = u.reachedTarget,
+				targetTile = u.targetTile,
+				plan = if u.isActive then plan else nil,
 			}
 		end
 		if u.type == "SpawnPhaseEnd" then

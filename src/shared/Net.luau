@@ -8,7 +8,7 @@
 --   Stats(buf)         per-player tiles / troops / gold (every few ticks)
 --   Names(buf)         name placements (NameBoxCalculator), when recomputed
 --   Units(list)        unit changes this tick: { id, unitType, ownerID, pos, troops, isActive, isRetreating,
---                      level, underConstruction, markedForDeletion }
+--                      level, underConstruction, markedForDeletion, reachedTarget, targetTile }
 --   Me(info)           private: { costs = { [unitType] = gold }, disabled = { [unitType] = true }, maxTroops,
 --                      troopRate (per s),
 --                      attackingTroops, attacking, allied, bordering? = { smallID }, hasCoast? }

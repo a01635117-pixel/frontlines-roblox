@@ -21,6 +21,7 @@ local MAX_TILE = 1024 -- EditableImage size limit
 local TERRITORY_ALPHA = 0.588 -- render-settings.json territoryAlpha
 local TERRITORY_SATURATION = 0.85 -- render-settings.json territorySaturation
 local OWNER_MASK = 0x0fff
+local FALLOUT_BIT = 0x2000 -- GameMap FALLOUT (bit 13)
 
 local band = bit32.band
 local readu16, writeu16 = buffer.readu16, buffer.writeu16
@@ -153,9 +154,18 @@ end
 -- Packed RGBA for one tile.
 function TerritoryRenderer:_pixel(tile: number): number
 	local state = self.state
-	local owner = band(readu16(state, tile * 2), OWNER_MASK)
+	local raw = readu16(state, tile * 2)
+	if band(raw, FALLOUT_BIT) ~= 0 then
+		-- Stale-nuke ground (territory.frag.glsl): opaque green with a per-tile
+		-- hash noise (staleNukeR/G/B 0.05/0.55/0.07, variation 0.05).
+		local W = self.W
+		local x, y = tile % W, tile // W
+		local h = math.sin(x * 12.9898 + y * 78.233) * 43758.5453
+		local n = (h - math.floor(h)) * 0.05
+		return pack(math.floor((0.05 + n) * 255 + 0.5), math.floor((0.55 + n) * 255 + 0.5), math.floor((0.07 + n) * 255 + 0.5))
+	end
+	local owner = band(raw, OWNER_MASK)
 	if owner == 0 then
-		-- TODO(port): fallout / stale-nuke ground.
 		return readu32(self.terrain, tile * 4)
 	end
 	local W = self.W
