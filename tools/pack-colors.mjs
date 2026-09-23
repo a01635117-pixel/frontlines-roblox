@@ -69,6 +69,7 @@ ${teams}
 \t-- CIEDE2000 (colord .delta) between pool colours, row-major.
 \thumanDelta = ${deltaMatrix(theme.humanColors)},
 \tnationDelta = ${deltaMatrix(theme.nationColors)},
+\tclassicBotDelta = ${deltaMatrix(theme.classicBotColors)},
 \tfocusedBorder = ${rgb(colord(theme.focusedBorderColor))},
 \tspawnHighlight = ${rgb(colord(theme.spawnHighlightColor))},
 }

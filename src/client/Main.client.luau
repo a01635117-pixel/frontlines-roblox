@@ -16,6 +16,7 @@ local TerrainColors = require(Shared:WaitForChild("TerrainColors"))
 local Format = require(script.Parent:WaitForChild("Format"))
 local Hud = require(script.Parent:WaitForChild("Hud"))
 local MapCamera = require(script.Parent:WaitForChild("MapCamera"))
+local NameLayer = require(script.Parent:WaitForChild("NameLayer"))
 local TerritoryRenderer = require(script.Parent:WaitForChild("TerritoryRenderer"))
 
 local player = Players.LocalPlayer
@@ -49,6 +50,10 @@ local W, H = gameMap:width(), gameMap:height()
 
 local camera = MapCamera.new(background, W, H)
 local renderer = TerritoryRenderer.new(camera, gameMap)
+local nameLayer = NameLayer.new(background, camera)
+camera.onChanged = function()
+	nameLayer:refresh()
+end
 local theme = ColorAllocator.Theme.new()
 
 local roster = {} -- smallID -> entry
@@ -64,6 +69,7 @@ local function addPlayers(entries)
 		roster[e.smallID] = e
 		local c = theme:territoryColor(e.id, e.type)
 		renderer:setPlayerColor(e.smallID, c.rgb, c.border)
+		nameLayer:setPlayer(e.smallID, e.name, c.rgb, e.type == "BOT")
 		if e.clientID == state.yourClientID then
 			mySmallID = e.smallID
 		end
@@ -72,6 +78,9 @@ end
 
 addPlayers(state.players)
 renderer:loadState(Net.unwrap(state.tiles))
+Net.unpackNames(state.names, function(smallID, x, y, size)
+	nameLayer:setPlacement(smallID, x, y, size)
+end)
 camera:fit()
 
 local function estimatedTick(): number
@@ -91,6 +100,12 @@ end
 -- Server events ------------------------------------------------------------------
 
 Net.Roster.OnClientEvent:Connect(addPlayers)
+
+Net.Names.OnClientEvent:Connect(function(buf)
+	Net.unpackNames(buf, function(smallID, x, y, size)
+		nameLayer:setPlacement(smallID, x, y, size)
+	end)
+end)
 
 Net.Tick.OnClientEvent:Connect(function(buf)
 	local tick = Net.unpackTiles(buf, function(tile, s)
@@ -134,6 +149,7 @@ end
 Net.Stats.OnClientEvent:Connect(function(buf)
 	Net.unpackStats(buf, function(smallID, tiles, troops, gold)
 		stats[smallID] = { tiles = tiles, troops = troops, gold = gold }
+		nameLayer:setTroops(smallID, troops, tiles > 0)
 	end)
 	local mine = mySmallID and stats[mySmallID]
 	if mine then

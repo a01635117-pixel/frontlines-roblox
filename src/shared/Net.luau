@@ -6,6 +6,7 @@
 --   Roster(players)    players added since the last roster message
 --   Tick(buf)          tile ownership changes for one tick (packed, see below)
 --   Stats(buf)         per-player tiles / troops / gold (every few ticks)
+--   Names(buf)         name placements (NameBoxCalculator), when recomputed
 --   Event(evt)         game events: spawn phase end, winner, messages
 -- Client -> server
 --   Intent(intent)     { type = "spawn", tile } | { type = "attack", targetSmallID, ratio }
@@ -16,7 +17,7 @@ local EncodingService = game:GetService("EncodingService")
 
 local Net = {}
 
-local NAMES = { "GameState", "Roster", "Tick", "Stats", "Event", "Intent" }
+local NAMES = { "GameState", "Roster", "Tick", "Stats", "Names", "Event", "Intent" }
 
 local folder: Folder
 if RunService:IsServer() then
@@ -123,6 +124,31 @@ function Net.unpackStats(buf: buffer, fn: (number, number, number, number) -> ()
 		o += 22
 	end
 	return tick
+end
+
+-- Names: u16 count, then count x (u16 smallID, i16 x, i16 y, f32 size).
+function Net.packNames(rows: { { number } }): buffer
+	local b = buffer.create(2 + #rows * 10)
+	buffer.writeu16(b, 0, #rows)
+	local o = 2
+	for _, r in rows do
+		buffer.writeu16(b, o, r[1])
+		buffer.writei16(b, o + 2, r[2])
+		buffer.writei16(b, o + 4, r[3])
+		buffer.writef32(b, o + 6, r[4])
+		o += 10
+	end
+	return wrap(b)
+end
+
+function Net.unpackNames(buf: buffer, fn: (number, number, number, number) -> ())
+	local b = unwrap(buf)
+	local n = buffer.readu16(b, 0)
+	local o = 2
+	for _ = 1, n do
+		fn(buffer.readu16(b, o), buffer.readi16(b, o + 2), buffer.readi16(b, o + 4), buffer.readf32(b, o + 6))
+		o += 10
+	end
 end
 
 return Net

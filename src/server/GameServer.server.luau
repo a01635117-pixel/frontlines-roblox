@@ -15,6 +15,7 @@ local RunService = game:GetService("RunService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Net = require(Shared.Net)
 local GameRunner = require(script.Parent.Core.GameRunner)
+local NameBoxCalculator = require(script.Parent.Core.NameBoxCalculator)
 
 local MAP_ID = script:GetAttribute("Map") or "World"
 local BOTS = script:GetAttribute("Bots") or 250
@@ -88,6 +89,44 @@ local function newRosterEntries()
 	return out
 end
 
+-- Name placements, recomputed when upstream GameRunner recomputes them.
+local names = {} -- smallID -> { x, y, size }
+
+local function nameRows(): { { number } }
+	local rows = {}
+	for smallID, v in names do
+		table.insert(rows, { smallID, v.x, v.y, v.size })
+	end
+	return rows
+end
+
+local function updateNames(wasInSpawnPhase: boolean)
+	local changed = {}
+	local function set(p, v)
+		local old = names[p:smallID()]
+		if old == nil or old.x ~= v.x or old.y ~= v.y or old.size ~= v.size then
+			names[p:smallID()] = v
+			table.insert(changed, { p:smallID(), v.x, v.y, v.size })
+		end
+	end
+	if mg:inSpawnPhase() then
+		for _, p in mg:players() do
+			if (p:type() == "HUMAN" or p:type() == "NATION") and p:spawnTile() ~= nil then
+				set(p, NameBoxCalculator.placeSpawnName(mg, p))
+			end
+		end
+	end
+	local spawnJustEnded = wasInSpawnPhase and not mg:inSpawnPhase()
+	if spawnJustEnded or mg:ticks() < 3 or mg:ticks() % 30 == 0 then
+		for _, p in mg:players() do
+			set(p, NameBoxCalculator.placeName(mg, p))
+		end
+	end
+	if #changed > 0 then
+		Net.Names:FireAllClients(Net.packNames(changed))
+	end
+end
+
 local function fullState(forPlayer: Player)
 	local roster = {}
 	for _, p in mg:allPlayers() do
@@ -104,6 +143,7 @@ local function fullState(forPlayer: Player)
 		yourClientID = clientIDOf(forPlayer),
 		players = roster,
 		tiles = Net.wrap(copy),
+		names = Net.packNames(nameRows()),
 	}
 end
 
@@ -215,6 +255,7 @@ local function runTick()
 		end
 	end
 
+	local wasInSpawnPhase = mg:inSpawnPhase()
 	local updates = runner:executeNextTick(intents)
 	local tick = mg:ticks()
 
@@ -246,6 +287,7 @@ local function runTick()
 	if tick % STATS_EVERY == 0 then
 		Net.Stats:FireAllClients(Net.packStats(tick, statsRows()))
 	end
+	updateNames(wasInSpawnPhase)
 	handleUpdates(updates)
 	return mg:getWinner() == nil
 end

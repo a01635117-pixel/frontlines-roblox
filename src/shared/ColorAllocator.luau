@@ -91,11 +91,16 @@ end
 local Theme = {}
 Theme.__index = Theme
 
-function Theme.new()
-	-- Nation fallback is the nation pool itself (upstream: new ColorAllocator(nationColors, nationColors)).
+-- useClassicBotColors: upstream graphics option giving every tribe its own
+-- colour instead of the flat Bot grey. On by default here: without it,
+-- neighbouring tribes blend together at Compact map resolution.
+function Theme.new(useClassicBotColors: boolean?)
+	-- Nation / classic-bot fallbacks are their own pools, as upstream.
 	return setmetatable({
 		human = ColorAllocator.new(ThemeColors.human, ThemeColors.humanDelta, ThemeColors.fallback),
 		nation = ColorAllocator.new(ThemeColors.nation, ThemeColors.nationDelta, ThemeColors.nation),
+		classicBot = ColorAllocator.new(ThemeColors.classicBot, ThemeColors.classicBotDelta, ThemeColors.classicBot),
+		useClassicBotColors = if useClassicBotColors == nil then true else useClassicBotColors,
 	}, Theme)
 end
 
@@ -105,7 +110,10 @@ function Theme:territoryColor(playerId: string, playerType: string)
 	if playerType == "HUMAN" then
 		return self.human:assignColor(playerId)
 	elseif playerType == "BOT" then
-		-- Tribes use the flat Bot team colour in every mode.
+		if self.useClassicBotColors then
+			return self.classicBot:assignColor(playerId)
+		end
+		-- Tribes use the flat Bot team colour otherwise.
 		return ThemeColors.team.Bot
 	end
 	return self.nation:assignColor(playerId)
