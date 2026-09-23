@@ -7,19 +7,26 @@
 --   Tick(buf)          tile ownership changes for one tick (packed, see below)
 --   Stats(buf)         per-player tiles / troops / gold (every few ticks)
 --   Names(buf)         name placements (NameBoxCalculator), when recomputed
---   Units(list)        unit changes this tick: { id, unitType, ownerID, pos, troops, isActive, isRetreating }
+--   Units(list)        unit changes this tick: { id, unitType, ownerID, pos, troops, isActive, isRetreating,
+--                      level, underConstruction, markedForDeletion }
+--   BuildInfo(costs)   your build menu prices: { [unitType] = gold | false (disabled) }
 --   Event(evt)         game events: spawn phase end, winner, messages
 -- Client -> server
 --   Intent(intent)     { type = "spawn", tile } | { type = "click", tile, ratio }
 --                      | { type = "attack", targetSmallID, ratio } | { type = "cancel_boat", unitID }
 --                      | { type = "cancel_attack", attackID }
+--                      | { type = "place", unit, tile }   (build, or upgrade a structure in range)
+--                      | { type = "delete_at", tile }     (closest own structure within 5 tiles)
+--   Query(q) -> result  RemoteFunction: { tile } -> { units = { { unit, cost, canBuild, canUpgrade } }, deleteUnit }
 
 local RunService = game:GetService("RunService")
 local EncodingService = game:GetService("EncodingService")
 
 local Net = {}
 
-local NAMES = { "GameState", "Roster", "Tick", "Stats", "Names", "Units", "Event", "Intent" }
+local NAMES = { "GameState", "Roster", "Tick", "Stats", "Names", "Units", "BuildInfo", "Event", "Intent" }
+
+local FUNCTIONS = { "Query" }
 
 local folder: Folder
 if RunService:IsServer() then
@@ -32,6 +39,11 @@ if RunService:IsServer() then
 			e.Name = name
 			e.Parent = folder
 		end
+		for _, name in FUNCTIONS do
+			local f = Instance.new("RemoteFunction")
+			f.Name = name
+			f.Parent = folder
+		end
 		folder.Parent = script.Parent
 	end
 else
@@ -40,6 +52,9 @@ end
 
 for _, name in NAMES do
 	Net[name] = folder:WaitForChild(name) :: RemoteEvent
+end
+for _, name in FUNCTIONS do
+	Net[name] = folder:WaitForChild(name) :: RemoteFunction
 end
 
 -- Payloads above this size are zstd-compressed.

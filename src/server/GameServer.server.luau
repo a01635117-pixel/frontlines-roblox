@@ -15,6 +15,8 @@ local RunService = game:GetService("RunService")
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Net = require(Shared.Net)
 local GameRunner = require(script.Parent.Core.GameRunner)
+local GameTypes = require(script.Parent.Core.GameTypes)
+local Util = require(Shared.Util)
 local NameBoxCalculator = require(script.Parent.Core.NameBoxCalculator)
 
 local MAP_ID = script:GetAttribute("Map") or "World"
@@ -58,7 +60,8 @@ local runner = GameRunner.create({
 		infiniteGold = false,
 		infiniteTroops = false,
 		instantBuild = false,
-		disabledUnits = {},
+		-- Not ported yet: rail network, SAMs, nukes, warships (silos only matter with nukes).
+		disabledUnits = { "Factory", "SAM Launcher", "Missile Silo", "Atom Bomb", "Hydrogen Bomb", "MIRV", "Warship" },
 		nations = "disabled", -- TODO(port): nations
 	},
 	players = players,
@@ -152,7 +155,7 @@ local function fullState(forPlayer: Player)
 			local list = {}
 			for _, u in mg:units() do
 				local up = u:toUpdate()
-				table.insert(list, { id = up.id, unitType = up.unitType, ownerID = up.ownerID, pos = up.pos, troops = up.troops, isActive = true, isRetreating = up.isRetreating })
+				table.insert(list, { id = up.id, unitType = up.unitType, ownerID = up.ownerID, pos = up.pos, troops = up.troops, isActive = true, isRetreating = up.isRetreating, level = up.level, underConstruction = up.underConstruction, markedForDeletion = up.markedForDeletion ~= false })
 			end
 			return list
 		end)(),
@@ -187,8 +190,63 @@ end)
 local pending = {} -- queued intents for the next tick
 local intentCount = {} -- clientID -> count this tick
 
+-- Studio-only handle for debugging from the command bar / MCP.
+if RunService:IsStudio() then
+	_G.OpenFront = { game = mg, runner = runner }
+end
+
+-- Unit types the build menu may place (upstream BuildMenus order).
+local BUILDABLE = { "City", "Factory", "Port", "Defense Post", "Missile Silo", "SAM Launcher", "Warship", "Atom Bomb", "Hydrogen Bomb", "MIRV" }
+
 local function isInt(v): boolean
 	return type(v) == "number" and v == math.floor(v)
+end
+
+-- Upstream radial menu "delete": closest finished structure of ours within
+-- manhattan distance 5 of a land tile we own.
+local DELETE_SELECTION_RADIUS = 5
+local function deletableAt(me, tile: number)
+	if mg:inSpawnPhase() or not me:canDeleteUnit() or not mg:isLand(tile) then
+		return nil
+	end
+	local owner = mg:owner(tile)
+	if not owner:isPlayer() or owner:id() ~= me:id() then
+		return nil
+	end
+	local mine = {}
+	for _, u in me:units() do
+		if
+			not u:isUnderConstruction()
+			and not u:isMarkedForDeletion()
+			and GameTypes.Structures.has(u:type())
+			and mg:manhattanDist(u:tile(), tile) <= DELETE_SELECTION_RADIUS
+		then
+			table.insert(mine, u)
+		end
+	end
+	return Util.findClosestBy(mine, function(u)
+		return mg:manhattanDist(u:tile(), tile)
+	end)
+end
+
+-- Build menu query: what the asking player can build / upgrade / delete at a tile.
+Net.Query.OnServerInvoke = function(player: Player, q)
+	local me = mg:playerByClientID(clientIDOf(player))
+	if me == nil or type(q) ~= "table" or not isInt(q.tile) or not mg:isValidRef(q.tile) then
+		return nil
+	end
+	local list = {}
+	for _, u in BUILDABLE do
+		if not mg:config():isUnitDisabled(u) then
+			table.insert(list, u)
+		end
+	end
+	local out = {}
+	for _, bu in me:buildableUnits(q.tile, list) do
+		table.insert(out, { unit = bu.type, cost = bu.cost, canBuild = bu.canBuild ~= false, canUpgrade = bu.canUpgrade ~= false })
+	end
+	local del = deletableAt(me, q.tile)
+	return { units = out, deleteUnit = if del then del:type() else nil }
 end
 
 Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
@@ -250,6 +308,29 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 		if type(intent.attackID) == "string" and #intent.attackID <= 16 then
 			table.insert(pending, { type = "cancel_attack", clientID = clientID, attackID = intent.attackID })
 		end
+	elseif t == "place" then
+		-- Build menu placement: upgrade a structure in range when possible,
+		-- otherwise build a new one (upstream build ghost behaviour).
+		local tile, unitType = intent.tile, intent.unit
+		if not isInt(tile) or not mg:isValidRef(tile) or type(unitType) ~= "string" then
+			return
+		end
+		if not table.find(BUILDABLE, unitType) or mg:config():isUnitDisabled(unitType) then
+			return
+		end
+		local bu = me:buildableUnits(tile, { unitType })[1]
+		if bu.canUpgrade ~= false then
+			table.insert(pending, { type = "upgrade_structure", clientID = clientID, unitId = bu.canUpgrade, amount = 1 })
+		elseif bu.canBuild ~= false then
+			table.insert(pending, { type = "build_unit", clientID = clientID, unit = unitType, tile = tile })
+		end
+	elseif t == "delete_at" then
+		if isInt(intent.tile) and mg:isValidRef(intent.tile) then
+			local u = deletableAt(me, intent.tile)
+			if u then
+				table.insert(pending, { type = "delete_unit", clientID = clientID, unitId = u:id() })
+			end
+		end
 	elseif t == "cancel_boat" then
 		if isInt(intent.unitID) then
 			table.insert(pending, { type = "cancel_boat", clientID = clientID, unitID = intent.unitID })
@@ -278,6 +359,9 @@ local function handleUpdates(updates)
 				troops = u.troops,
 				isActive = u.isActive,
 				isRetreating = u.isRetreating,
+				level = u.level,
+				underConstruction = u.underConstruction,
+				markedForDeletion = u.markedForDeletion ~= false,
 			}
 		end
 		if u.type == "SpawnPhaseEnd" then
@@ -347,6 +431,16 @@ local function runTick()
 
 	if tick % STATS_EVERY == 0 then
 		Net.Stats:FireAllClients(Net.packStats(tick, statsRows()))
+		for _, plr in Players:GetPlayers() do
+			local me = mg:playerByClientID(clientIDOf(plr))
+			if me and me:isAlive() then
+				local costs = {}
+				for _, u in BUILDABLE do
+					costs[u] = if mg:config():isUnitDisabled(u) then false else mg:config():unitInfo(u).cost(mg, me)
+				end
+				Net.BuildInfo:FireClient(plr, costs)
+			end
+		end
 	end
 	updateNames(wasInSpawnPhase)
 	handleUpdates(updates)

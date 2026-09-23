@@ -31,6 +31,7 @@ function MapCamera.new(background: Frame, W: number, H: number)
 		_tiles = {},
 		_connections = {},
 		onClick = nil :: ((Vector2) -> ())?,
+		onRightClick = nil :: ((Vector2) -> ())?,
 		onHover = nil :: ((Vector2) -> ())?,
 		onChanged = nil :: (() -> ())?,
 	}, MapCamera)
@@ -137,11 +138,13 @@ function MapCamera:_bindInput()
 
 	connect(UserInputService.InputEnded, function(input)
 		if panButtons[input.UserInputType] and input.UserInputType == dragButton then
-			local wasClick = dragging and not dragMoved and input.UserInputType == Enum.UserInputType.MouseButton1
+			local still = dragging and not dragMoved
 			dragging = false
 			dragButton = nil
-			if wasClick and self.onClick then
+			if still and input.UserInputType == Enum.UserInputType.MouseButton1 and self.onClick then
 				self.onClick(mousePos())
+			elseif still and input.UserInputType == Enum.UserInputType.MouseButton2 and self.onRightClick then
+				self.onRightClick(mousePos())
 			end
 		end
 	end)

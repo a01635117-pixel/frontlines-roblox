@@ -13,6 +13,7 @@ local MapLoader = require(Shared:WaitForChild("MapLoader"))
 local Net = require(Shared:WaitForChild("Net"))
 local TerrainColors = require(Shared:WaitForChild("TerrainColors"))
 
+local BuildMenu = require(script.Parent:WaitForChild("BuildMenu"))
 local Format = require(script.Parent:WaitForChild("Format"))
 local Hud = require(script.Parent:WaitForChild("Hud"))
 local MapCamera = require(script.Parent:WaitForChild("MapCamera"))
@@ -22,6 +23,8 @@ local UnitLayer = require(script.Parent:WaitForChild("UnitLayer"))
 
 local player = Players.LocalPlayer
 workspace.CurrentCamera.CameraType = Enum.CameraType.Scriptable
+-- Keys 1..0 are build hotkeys (upstream), not backpack slots.
+game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
 
 -- GUI ----------------------------------------------------------------------------
 
@@ -106,9 +109,48 @@ for name, value in GameMap.TerrainType do
 	terrainNames[value] = name
 end
 
+local function tileAtScreen(p: Vector2): number?
+	local x, y = camera:mapPos(p)
+	if gameMap:isValidCoord(x, y) then
+		return gameMap:ref(x, y)
+	end
+	return nil
+end
+
+local function myStats()
+	return mySmallID and stats[mySmallID]
+end
+
+local buildMenu = BuildMenu.new({
+	gui = gui,
+	camera = camera,
+	map = gameMap,
+	net = Net,
+	unitLayer = unitLayer,
+	tileAt = tileAtScreen,
+	mousePos = function()
+		return game:GetService("UserInputService"):GetMouseLocation()
+	end,
+	mySmallID = function()
+		return mySmallID
+	end,
+	-- Upstream hides the build bar during the spawn phase and once we are dead.
+	canAct = function()
+		local mine = myStats()
+		return not inSpawnPhase and not gameOver and mine ~= nil and mine.tiles > 0
+	end,
+})
+unitLayer.onChanged = function()
+	buildMenu:refresh()
+end
+
 -- Server events ------------------------------------------------------------------
 
 Net.Roster.OnClientEvent:Connect(addPlayers)
+
+Net.BuildInfo.OnClientEvent:Connect(function(costs)
+	buildMenu:setCosts(costs)
+end)
 
 Net.Names.OnClientEvent:Connect(function(buf)
 	Net.unpackNames(buf, function(smallID, x, y, size)
@@ -169,6 +211,7 @@ Net.Stats.OnClientEvent:Connect(function(buf)
 	local mine = mySmallID and stats[mySmallID]
 	if mine then
 		hud:setMyStats(mine.troops, maxTroopsForHuman(mine.tiles), mine.gold)
+		buildMenu:setGold(mine.gold)
 		if mine.tiles > 0 then
 			haveSpawned = true
 		elseif haveSpawned and not inSpawnPhase and not shownDeath and not gameOver then
@@ -183,6 +226,7 @@ end)
 Net.Event.OnClientEvent:Connect(function(evt)
 	if evt.type == "SpawnPhaseEnd" then
 		inSpawnPhase = false
+		buildMenu:refresh()
 	elseif evt.type == "Win" then
 		gameOver = true
 		if evt.winnerSmallID ~= nil and evt.winnerSmallID == mySmallID then
@@ -195,20 +239,15 @@ end)
 
 -- Input ----------------------------------------------------------------------------
 
-local function tileAtScreen(p: Vector2): number?
-	local x, y = camera:mapPos(p)
-	if gameMap:isValidCoord(x, y) then
-		return gameMap:ref(x, y)
-	end
-	return nil
-end
-
 camera.onClick = function(p: Vector2)
 	if gameOver or mySmallID == nil then
 		return
 	end
 	local tile = tileAtScreen(p)
 	if tile == nil then
+		return
+	end
+	if buildMenu:click(tile) then
 		return
 	end
 	if inSpawnPhase then
@@ -221,7 +260,15 @@ camera.onClick = function(p: Vector2)
 	Net.Intent:FireServer({ type = "click", tile = tile, ratio = hud.ratio })
 end
 
+camera.onRightClick = function(p: Vector2)
+	local tile = tileAtScreen(p)
+	if tile ~= nil and not gameOver then
+		buildMenu:openContextMenu(p, tile)
+	end
+end
+
 camera.onHover = function(p: Vector2)
+	buildMenu:hover(p)
 	local tile = tileAtScreen(p)
 	if tile == nil then
 		hud:setHover(nil)
