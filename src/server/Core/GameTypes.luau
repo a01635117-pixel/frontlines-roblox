@@ -86,6 +86,17 @@ GameTypes.Structures = group({
 
 GameTypes.Nukes = group({ UnitType.AtomBomb, UnitType.HydrogenBomb, UnitType.MIRVWarhead, UnitType.MIRV })
 
+GameTypes.BuildableAttacks = group({ UnitType.AtomBomb, UnitType.HydrogenBomb, UnitType.MIRV, UnitType.Warship })
+
+do
+	local menus = table.clone(GameTypes.Structures.types)
+	table.move(GameTypes.BuildableAttacks.types, 1, #GameTypes.BuildableAttacks.types, #menus + 1, menus)
+	GameTypes.BuildMenus = group(menus)
+	local buildable = table.clone(menus)
+	table.insert(buildable, UnitType.TransportShip)
+	GameTypes.PlayerBuildable = group(buildable)
+end
+
 GameTypes.ColoredTeams = table.freeze({
 	Red = "Red",
 	Blue = "Blue",

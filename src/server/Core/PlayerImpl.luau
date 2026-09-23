@@ -14,10 +14,12 @@ local PseudoRandom = require(Shared.PseudoRandom)
 local Util = require(Shared.Util)
 local AttackImpl = require(script.Parent.AttackImpl)
 local TransportShipUtils = require(script.Parent.TransportShipUtils)
+local Scratch = require(script.Parent.TileTraversalScratch)
 local GameTypes = require(script.Parent.GameTypes)
 
 local PlayerType = GameTypes.PlayerType
 local UnitType = GameTypes.UnitType
+local Structures = GameTypes.Structures
 local Relation = GameTypes.Relation
 local ColoredTeams = GameTypes.ColoredTeams
 local toInt, within, simpleHash = Util.toInt, Util.within, Util.simpleHash
@@ -271,15 +273,230 @@ function PlayerImpl:_canBuildUnitType(unitType: string, knownCost: number?): boo
 	return true
 end
 
-function PlayerImpl:_canSpawnUnitType(unitType: string, targetTile: number, _validTiles)
+function PlayerImpl:_canSpawnUnitType(unitType: string, targetTile: number, validTiles)
 	if unitType == UnitType.TransportShip then
 		return TransportShipUtils.canBuildTransportShip(self.mg, self, targetTile)
 	elseif unitType == UnitType.MIRVWarhead or unitType == UnitType.Shell or unitType == UnitType.SAMMissile then
 		return targetTile
+	elseif unitType == UnitType.Port then
+		return self:portSpawn(targetTile, validTiles)
+	elseif unitType == UnitType.TradeShip then
+		return self:tradeShipSpawn(targetTile)
+	elseif unitType == UnitType.Train then
+		return self:landBasedUnitSpawn(targetTile)
+	elseif
+		unitType == UnitType.MissileSilo
+		or unitType == UnitType.DefensePost
+		or unitType == UnitType.SAMLauncher
+		or unitType == UnitType.City
+		or unitType == UnitType.Factory
+	then
+		return self:landBasedStructureSpawn(targetTile, validTiles)
 	end
-	-- TODO(port): nukeSpawn, portSpawn, warshipSpawn, tradeShipSpawn,
-	-- landBasedUnitSpawn, landBasedStructureSpawn.
+	-- TODO(port): nukeSpawn (AtomBomb / HydrogenBomb / MIRV), warshipSpawn.
 	error(`TODO(port): spawning {unitType}`)
+end
+
+-- Structure placement -------------------------------------------------------------
+
+-- Own tiles within radius 15 of `tile` that keep structureMinDist (15) from
+-- every structure, nearest first. Flood order matches GameMap.bfs (stack,
+-- N S W E) so the stable sort keeps upstream's tie order.
+function PlayerImpl:validStructureSpawnTiles(tile: number): { number }
+	local mg = self.mg
+	if mg:owner(tile) ~= self then
+		return {}
+	end
+	local searchRadius = 15
+	local r2 = searchRadius * searchRadius
+	local nearbyUnits = mg:nearbyUnits(tile, searchRadius * 2, Structures.types, nil, true)
+	local map = mg:map()
+	local w = map:width()
+	local cx, cy = tile % w, tile // w
+	local smallID = self._smallID
+	local function inside(t: number): boolean
+		local dx, dy = t % w - cx, t // w - cy
+		return dx * dx + dy * dy < r2 and map:ownerID(t) == smallID
+	end
+	local scratch = Scratch.get(mg)
+	local gen = Scratch.bump(scratch)
+	local visited = scratch.visited
+	local stack = scratch.stack
+	table.clear(stack)
+	local nearbyTiles = {}
+	if inside(tile) then
+		buffer.writeu32(visited, tile * 4, gen)
+		table.insert(nearbyTiles, tile)
+		table.insert(stack, tile)
+	end
+	local function visit(n: number)
+		if buffer.readu32(visited, n * 4) ~= gen and inside(n) then
+			buffer.writeu32(visited, n * 4, gen)
+			table.insert(nearbyTiles, n)
+			table.insert(stack, n)
+		end
+	end
+	while #stack > 0 do
+		map:forEachNeighbor(table.remove(stack) :: number, visit)
+	end
+	local minDist2 = mg:config():structureMinDist() ^ 2
+	local valid = {}
+	for _, t in nearbyTiles do
+		local blocked = false
+		for _, entry in nearbyUnits do
+			if mg:euclideanDistSquared(entry.unit:tile(), t) < minDist2 then
+				blocked = true
+				break
+			end
+		end
+		if not blocked then
+			table.insert(valid, t)
+		end
+	end
+	Util.sort(valid, function(a, b)
+		return mg:euclideanDistSquared(a, tile) - mg:euclideanDistSquared(b, tile)
+	end)
+	return valid
+end
+
+function PlayerImpl:landBasedStructureSpawn(tile: number, validTiles): number | false
+	local tiles = validTiles or self:validStructureSpawnTiles(tile)
+	if #tiles == 0 then
+		return false
+	end
+	return tiles[1]
+end
+
+function PlayerImpl:landBasedUnitSpawn(tile: number): number | false
+	return if self.mg:isLand(tile) and not self.mg:isImpassable(tile) then tile else false
+end
+
+function PlayerImpl:portSpawn(tile: number, validTiles): number | false
+	local mg = self.mg
+	local spawns = {}
+	for t in mg:bfs(tile, GameMap.manhattanDistFN(tile, mg:config():radiusPortSpawn())) do
+		if mg:owner(t) == self and mg:isShore(t) then
+			table.insert(spawns, t)
+		end
+	end
+	Util.sort(spawns, function(a, b)
+		return mg:manhattanDist(a, tile) - mg:manhattanDist(b, tile)
+	end)
+	local validSet = {}
+	for _, t in validTiles or self:validStructureSpawnTiles(tile) do
+		validSet[t] = true
+	end
+	for _, t in spawns do
+		if validSet[t] then
+			return t
+		end
+	end
+	return false
+end
+
+function PlayerImpl:tradeShipSpawn(targetTile: number): number | false
+	for _, u in self:units(UnitType.Port) do
+		if u:tile() == targetTile then
+			return targetTile
+		end
+	end
+	return false
+end
+
+-- Upgrades ------------------------------------------------------------------------
+
+function PlayerImpl:_findExistingUnitToUpgrade(unitType: string, targetTile: number)
+	local mg = self.mg
+	local closest = Util.findClosestBy(mg:nearbyUnits(targetTile, mg:config():structureMinDist(), unitType, nil, true), function(entry)
+		return entry.distSquared
+	end)
+	return if closest then closest.unit else false
+end
+
+function PlayerImpl:findUnitToUpgrade(unitType: string, targetTile: number)
+	local unit = self:_findExistingUnitToUpgrade(unitType, targetTile)
+	if unit == false or not self:canUpgradeUnit(unit) then
+		return false
+	end
+	return unit
+end
+
+function PlayerImpl:_canUpgradeUnitType(unitType: string): boolean
+	return self.mg:config():unitInfo(unitType).upgradable == true
+end
+
+function PlayerImpl:_isUnitValidToUpgrade(unit): boolean
+	return not unit:isUnderConstruction() and not unit:isMarkedForDeletion() and unit:owner() == self
+end
+
+function PlayerImpl:canUpgradeUnit(unit): boolean
+	return self:_canUpgradeUnitType(unit:type()) and self:_canBuildUnitType(unit:type()) and self:_isUnitValidToUpgrade(unit)
+end
+
+function PlayerImpl:upgradeUnit(unit)
+	local mg = self.mg
+	local cost = mg:unitInfo(unit:type()).cost(mg, self)
+	self:removeGold(cost)
+	unit:increaseLevel()
+	self._numUnitsConstructed[unit:type()] = (self._numUnitsConstructed[unit:type()] or 0) + 1
+end
+
+-- MAX_UPGRADE_AMOUNT (upstream Game.ts): longest bulk-upgrade price table.
+local MAX_UPGRADE_AMOUNT = 50
+
+-- Unit types whose spawn rules are not ported yet: reported as unbuildable.
+local NOT_YET_SPAWNABLE = {
+	[UnitType.AtomBomb] = true,
+	[UnitType.HydrogenBomb] = true,
+	[UnitType.MIRV] = true,
+	[UnitType.Warship] = true,
+}
+
+-- What can be built / upgraded at `tile` (upstream buildableUnits).
+-- TODO(port): overlappingRailroads / ghostRailPaths (rail network).
+function PlayerImpl:buildableUnits(tile: number?, units: { string }?)
+	local mg = self.mg
+	local config = mg:config()
+	local list = units or GameTypes.PlayerBuildable.types
+	local inSpawnPhase = mg:inSpawnPhase()
+	local anyStructure = false
+	for _, u in list do
+		if Structures.has(u) then
+			anyStructure = true
+			break
+		end
+	end
+	local validTiles = if tile ~= nil and anyStructure then self:validStructureSpawnTiles(tile) else {}
+	local result = {}
+	for _, u in list do
+		local cost = config:unitInfo(u).cost(mg, self)
+		local canUpgrade = false
+		local canBuild = false
+		if tile ~= nil and self:_canBuildUnitType(u, cost) and not inSpawnPhase then
+			if self:_canUpgradeUnitType(u) then
+				local existing = self:_findExistingUnitToUpgrade(u, tile)
+				if existing ~= false and self:_isUnitValidToUpgrade(existing) then
+					canUpgrade = existing:id()
+				end
+			end
+			if NOT_YET_SPAWNABLE[u] then
+				canBuild = false -- TODO(port): nukes and warships
+			else
+				canBuild = self:_canSpawnUnitType(u, tile, validTiles)
+			end
+		end
+		local upgradeCosts = nil
+		if canUpgrade ~= false then
+			upgradeCosts = table.create(MAX_UPGRADE_AMOUNT)
+			local total = 0
+			for n = 0, MAX_UPGRADE_AMOUNT - 1 do
+				total += config:unitInfo(u).cost(mg, self, n)
+				upgradeCosts[n + 1] = total
+			end
+		end
+		table.insert(result, { type = u, canBuild = canBuild, canUpgrade = canUpgrade, cost = cost, upgradeCosts = upgradeCosts })
+	end
+	return result
 end
 
 -- Spawn tile for a unit of this type aimed at targetTile, or false.

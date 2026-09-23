@@ -113,6 +113,22 @@ function Util.sort<T>(arr: { T }, cmp: (T, T) -> number): { T }
 	return arr
 end
 
+-- Upstream findMinimumBy / findClosestBy: first value with the strictly
+-- smallest score among candidates, or nil.
+function Util.findClosestBy<T>(values: { T }, score: (T) -> number, isCandidate: ((T) -> boolean)?): T?
+	local best, bestScore = nil, math.huge
+	for _, v in values do
+		if isCandidate == nil or isCandidate(v) then
+			local s = score(v)
+			if s < bestScore then
+				bestScore = s
+				best = v
+			end
+		end
+	end
+	return best
+end
+
 -- JS-style comparator sorting tiles by Manhattan distance to `target`.
 function Util.distSort(gm, target: number)
 	return function(a: number, b: number): number

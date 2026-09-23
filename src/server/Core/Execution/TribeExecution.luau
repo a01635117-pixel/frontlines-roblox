@@ -6,6 +6,7 @@ local Util = require(Shared.Util)
 local Core = script.Parent.Parent
 local GameTypes = require(Core.GameTypes)
 local AiAttackBehavior = require(script.Parent.AiAttackBehavior)
+local StructureExecutions = require(script.Parent.StructureExecutions)
 
 local Structures = GameTypes.Structures
 
@@ -92,8 +93,8 @@ function TribeExecution:_deleteNextStructure()
 		if unit:isMarkedForDeletion() then
 			continue
 		end
-		-- TODO(port): DeleteUnitExecution
-		error("TODO(port): DeleteUnitExecution")
+		self.mg:addExecution(StructureExecutions.DeleteUnitExecution.new(self._tribe, unit:id()))
+		return
 	end
 end
 

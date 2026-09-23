@@ -21,7 +21,7 @@ local UnitType = GameTypes.UnitType
 local TerrainType = GameMap.TerrainType
 
 local log, pow = DetMath.log, DetMath.pow
-local within, sigmoid = Util.within, Util.sigmoid
+local within, sigmoid, toInt = Util.within, Util.sigmoid, Util.toInt
 
 -- attackLogic tunables
 local LARGE_TERRITORY_MIDPOINT = 300000
@@ -708,6 +708,72 @@ function Config:defensePostTargettingRange(): number
 end
 function Config:radiusPortSpawn(): number
 	return 20
+end
+
+-- Trade & trains --------------------------------------------------------------------
+
+local LN2 = 0.6931471805599453 -- JS Math.LN2
+
+function Config:tradeShipShortRangeDebuff(): number
+	return 300
+end
+
+function Config:proximityBonusPortsNb(totalPorts: number): number
+	return within(totalPorts / 3, 4, totalPorts)
+end
+
+function Config:tradeShipGold(dist: number, player): number
+	local debuff = self:tradeShipShortRangeDebuff()
+	local baseGold = 75000 / (1 + DetMath.exp(-0.03 * (dist - debuff))) + 50 * dist
+	return math.floor(baseGold * self:_goldMultiplierFor(player))
+end
+
+function Config:tradeShipSaturation(numTradeShips: number): number
+	local boost = 1 + 0.45 * DetMath.exp(-numTradeShips / 120)
+	local damping = 1 - sigmoid(numTradeShips, LN2 / 50, 330)
+	local plateau = 0.25 * (1 - sigmoid(numTradeShips, LN2 / 100, 800))
+	return boost * math.max(damping, plateau)
+end
+
+function Config:tradeShipSpawnRate(rejections: number, numTradeShips: number): number
+	local rejectionModifier = 1 / (rejections + 1)
+	return math.max(1, math.floor((100 * rejectionModifier) / self:tradeShipSaturation(numTradeShips)))
+end
+
+function Config:trainSaturation(numTrainUnits: number): number
+	local boost = 1 + 0.5 * DetMath.exp(-numTrainUnits / 30)
+	local damping = 1 - sigmoid(numTrainUnits, LN2 / 100, 560)
+	local plateau = 0.25 * (1 - sigmoid(numTrainUnits, LN2 / 150, 900))
+	return boost * math.max(damping, plateau)
+end
+
+function Config:trainSpawnRate(numPlayerFactories: number, numTrainUnits: number): number
+	local rate = (numPlayerFactories + 10) * 15
+	return math.max(1, math.floor(rate / self:trainSaturation(numTrainUnits)))
+end
+
+function Config:trainGold(rel: string, citiesVisited: number, player): number
+	citiesVisited = math.max(0, citiesVisited - 9)
+	local baseGold
+	if rel == "ally" then
+		baseGold = 35000
+	elseif rel == "team" or rel == "other" then
+		baseGold = 25000
+	else -- "self"
+		baseGold = 10000
+	end
+	local gold = math.max(5000, baseGold - citiesVisited * 5000)
+	return toInt(gold * self:_goldMultiplierFor(player))
+end
+
+function Config:trainStationMinRange(): number
+	return 15
+end
+function Config:trainStationMaxRange(): number
+	return 110
+end
+function Config:railroadMaxSize(): number
+	return self:trainStationMaxRange() * 1.4142
 end
 
 function Config:goldAdditionRate(player): number

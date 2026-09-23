@@ -11,6 +11,7 @@ local EncodingService = game:GetService("EncodingService")
 local ServerScriptService = game:GetService("ServerScriptService")
 local Shared = game:GetService("ReplicatedStorage").Shared
 
+-- Scenario vectors; reset(name) switches (default SimVectors).
 local V = require(script.Parent.SimVectors)
 
 local SimSpec = {}
@@ -90,15 +91,23 @@ local function compare(got, want): { string }
 	return diffs
 end
 
-function SimSpec.reset()
+function SimSpec.reset(vectorsName: string?)
+	V = require(script.Parent[vectorsName or "SimVectors"])
 	local GameRunner = require(ServerScriptService.Core.GameRunner)
 	local t0 = os.clock()
-	local runner = GameRunner.create({ gameID = V.gameID, config = V.config, players = {} }, Shared.Maps[V.map])
+	local runner = GameRunner.create({ gameID = V.gameID, config = V.config, players = V.players or {} }, Shared.Maps[V.map])
+	-- Scripted intents grouped by the tick they were issued.
+	local intentsByTick = {}
+	for _, r in V.intents or {} do
+		intentsByTick[r.tick] = intentsByTick[r.tick] or {}
+		table.insert(intentsByTick[r.tick], table.clone(r.intent))
+	end
 	state = {
 		runner = runner,
 		tick = 0,
 		nextSnap = 1,
 		results = {},
+		intentsByTick = intentsByTick,
 		firstFailure = nil,
 		simSeconds = 0,
 		setupMs = (os.clock() - t0) * 1000,
@@ -127,7 +136,7 @@ function SimSpec.run(untilTick: number): string
 			break
 		end
 		local t0 = os.clock()
-		s.runner:executeNextTick()
+		s.runner:executeNextTick(s.intentsByTick[s.tick])
 		s.simSeconds += os.clock() - t0
 		s.tick += 1
 	end
@@ -146,6 +155,20 @@ function SimSpec.run(untilTick: number): string
 	if V.unitsCreated ~= nil and s.tick == V.ticks then
 		local created = game._nextUnitID - 1
 		table.insert(lines, `units created: {created} (upstream {V.unitsCreated}) {if created == V.unitsCreated then "OK" else "MISMATCH"}`)
+	end
+	if V.unitsAlive ~= nil and s.tick == V.ticks then
+		local parts = {}
+		for _, u in game:units() do
+			table.insert(parts, `{u:id()}:{u:type()}:{u:owner():name()}:{u:tile()}:{u:level()}`)
+		end
+		local got = table.concat(parts, ";")
+		table.insert(lines, `alive units: {if got == V.unitsAlive then "OK" else "MISMATCH\n    got  " .. got .. "\n    want " .. V.unitsAlive}`)
+	end
+	if V.tradeGold ~= nil and s.tick == V.ticks then
+		local a = game:playerByClientID(V.players[1].clientID)
+		local b = game:playerByClientID(V.players[2].clientID)
+		local ok = a:tradeGold() == V.tradeGold[1] and b:tradeGold() == V.tradeGold[2]
+		table.insert(lines, `trade gold: {a:tradeGold()} / {b:tradeGold()} {if ok then "OK" else "MISMATCH (want " .. V.tradeGold[1] .. " / " .. V.tradeGold[2] .. ")"}`)
 	end
 	table.insert(
 		lines,

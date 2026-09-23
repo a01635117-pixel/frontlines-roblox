@@ -23,6 +23,8 @@ local SmallExecutions = require(Exec.SmallExecutions)
 local SpawnExecution = require(Exec.SpawnExecution)
 local TribeSpawner = require(Exec.TribeSpawner)
 local TransportShipExecution = require(Exec.TransportShipExecution)
+local ConstructionExecution = require(Exec.ConstructionExecution)
+local StructureExecutions = require(Exec.StructureExecutions)
 
 local PlayerType = GameTypes.PlayerType
 local GameType = GameTypes.GameType
@@ -61,9 +63,15 @@ function Executor:createExec(intent)
 		return TransportShipExecution.new(player, intent.dst, intent.troops)
 	elseif t == "cancel_boat" then
 		return SmallExecutions.BoatRetreatExecution.new(player, intent.unitID)
+	elseif t == "build_unit" then
+		return ConstructionExecution.new(player, intent.unit, intent.tile, intent.rocketDirectionUp, intent.amount)
+	elseif t == "upgrade_structure" then
+		return StructureExecutions.UpgradeStructureExecution.new(player, intent.unitId, intent.amount)
+	elseif t == "delete_unit" then
+		return StructureExecutions.DeleteUnitExecution.new(player, intent.unitId)
 	end
 	-- TODO(port): alliances, targeting, emoji, donations, embargo,
-	-- build/upgrade/delete units, quick chat, disconnect marking, pause.
+	-- quick chat, disconnect marking, pause, move warship.
 	warn(`TODO(port): intent type {t}`)
 	return SmallExecutions.NoOpExecution.new()
 end
