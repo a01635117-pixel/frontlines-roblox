@@ -89,6 +89,9 @@ local runner = GameRunner.create({
 		-- Solo in Studio behaves like upstream Singleplayer: no spawn timer, the
 		-- spawn phase ends when the player picks a location.
 		gameType = if RunService:IsStudio() and #players == 1 then "Singleplayer" else "Public",
+		-- Win only at 95 % land with nobody else able to afford a MIRV; no
+		-- timers, no "keep playing" (WinCheck:_hasWonRoblox).
+		robloxWinRule = true,
 		gameMode = "Free For All",
 		gameMapSize = "Compact",
 		bots = BOTS,
@@ -199,7 +202,7 @@ local function fullState(forPlayer: Player)
 			local list = {}
 			for _, u in mg:units() do
 				local up = u:toUpdate()
-				table.insert(list, { id = up.id, unitType = up.unitType, ownerID = up.ownerID, pos = up.pos, troops = up.troops, isActive = true, isRetreating = up.isRetreating, level = up.level, underConstruction = up.underConstruction, markedForDeletion = up.markedForDeletion ~= false, targetTile = up.targetTile, plan = mg:motionPlan(up.id), health = up.health, maxHealth = up.maxHealth })
+				table.insert(list, { id = up.id, unitType = up.unitType, ownerID = up.ownerID, pos = up.pos, troops = up.troops, isActive = true, isRetreating = up.isRetreating, level = up.level, underConstruction = up.underConstruction, markedForDeletion = up.markedForDeletion ~= false, targetTile = up.targetTile, plan = mg:motionPlan(up.id), health = up.health, maxHealth = up.maxHealth, targetable = up.targetable, targetUnitId = up.targetUnitId, warshipRetreating = up.warshipRetreating })
 			end
 			return list
 		end)(),
@@ -446,6 +449,26 @@ local BORDER_EVERY = 10
 -- Humans that had an outgoing attack on any tick since their last Me message
 -- (upstream's tutorial samples every tick; short attacks must not be missed).
 local sawAttack = {}
+local function attackRows(attacks, incoming: boolean)
+	local rows = {}
+	for _, a in attacks do
+		local other = if incoming then a:attacker() else a:target()
+		local row = {
+			id = a:id(),
+			other = if other:isPlayer() then other:smallID() else 0,
+			troops = a:troops(),
+			retreating = a:retreating(),
+		}
+		-- Front-line troop labels (AttackingTroopsController): player vs
+		-- player only, incoming attacks from tribes are not labelled.
+		if other:isPlayer() and not (incoming and other:type() == "BOT") then
+			row.front = a:clusteredPositions()
+		end
+		table.insert(rows, row)
+	end
+	return rows
+end
+
 local function meInfo(me, withBorders: boolean)
 	local config = mg:config()
 	local costs, disabled = {}, {}
@@ -467,6 +490,9 @@ local function meInfo(me, withBorders: boolean)
 		attackingTroops = attackingTroops,
 		attacking = attacking,
 		allied = #me:alliances() > 0,
+		-- AttacksDisplay: { id, other (smallID, 0 = wilderness), troops, retreating }.
+		incoming = attackRows(me:incomingAttacks(), true),
+		outgoing = attackRows(me:outgoingAttacks(), false),
 		spawnTile = me:spawnTile(),
 	}
 	if withBorders then
@@ -488,6 +514,31 @@ local function meInfo(me, withBorders: boolean)
 		info.hasCoast = coast
 	end
 	return info
+end
+
+local function playerForSmallID(smallID: number): Player?
+	local p = mg:playerBySmallID(smallID)
+	local clientID = p and p:isPlayer() and p:clientID()
+	if not clientID then
+		return nil
+	end
+	for _, plr in Players:GetPlayers() do
+		if clientIDOf(plr) == clientID then
+			return plr
+		end
+	end
+	return nil
+end
+
+local function sendMessage(playerSmallID: number?, evt)
+	if playerSmallID == nil then
+		Net.Event:FireAllClients(evt)
+		return
+	end
+	local plr = playerForSmallID(playerSmallID)
+	if plr then
+		Net.Event:FireClient(plr, evt)
+	end
 end
 
 -- Gold pop next to the gold counter (upstream ControlPanel.addGoldGain).
@@ -546,6 +597,9 @@ local function handleUpdates(updates)
 				targetTile = u.targetTile,
 				health = u.health,
 				maxHealth = u.maxHealth,
+				targetable = u.targetable,
+				targetUnitId = u.targetUnitId,
+				warshipRetreating = u.warshipRetreating,
 				plan = if u.isActive then plan else nil,
 			}
 		end
@@ -559,10 +613,31 @@ local function handleUpdates(updates)
 				winnerSmallID = if type(w) == "table" then w:smallID() else nil,
 			})
 		elseif u.type == "ConquestEvent" then
-			Net.Event:FireAllClients({ type = "Conquest", conquerorId = u.conquerorId, conqueredId = u.conqueredId })
+			-- Conquest popup (WorldTextPass): "+ gold" at the conquered player's name.
+			Net.Event:FireAllClients({
+				type = "Conquest",
+				conqueror = mg:player(u.conquerorId):smallID(),
+				conquered = mg:player(u.conqueredId):smallID(),
+				gold = u.gold or 0,
+			})
 			sendGoldGain(u.conquerorId, u.gold or 0)
 		elseif u.type == "BonusEvent" then
 			sendGoldGain(u.player, u.gold or 0)
+			-- Bonus popup ("+ 45K" rising over the port tile).
+			if u.tile and (u.gold or 0) ~= 0 then
+				Net.Event:FireAllClients({ type = "Bonus", tile = u.tile, gold = u.gold })
+			end
+		elseif u.type == "DisplayEvent" then
+			sendMessage(u.playerID, {
+				type = "Message",
+				message = u.message,
+				messageType = u.messageType,
+				params = u.params,
+				focusPlayerID = u.focusPlayerID,
+				unitID = u.unitID,
+			})
+		elseif u.type == "UnitIncoming" then
+			sendMessage(u.playerID, { type = "Incoming", unitID = u.unitID, message = u.message, messageType = u.messageType })
 		end
 	end
 	if #unitOrder > 0 then
@@ -639,6 +714,21 @@ local function runTick()
 	return mg:getWinner() == nil
 end
 
+local NEXT_MATCH_SECONDS = 20
+
+-- The match is over: tell clients, then restart this script for a new match
+-- (a fresh clone re-runs the lobby; the destroyed one takes its connections
+-- with it). TODO(port): lobby / matchmaking across servers.
+local function endMatch()
+	Net.Event:FireAllClients({ type = "MatchEnding", seconds = NEXT_MATCH_SECONDS })
+	task.delay(NEXT_MATCH_SECONDS, function()
+		Net.Event:FireAllClients({ type = "MatchReset" })
+		local fresh = script:Clone()
+		fresh.Parent = script.Parent
+		script:Destroy()
+	end)
+end
+
 local accumulator = 0
 local running = true
 RunService.Heartbeat:Connect(function(dt)
@@ -653,6 +743,7 @@ RunService.Heartbeat:Connect(function(dt)
 		steps += 1
 		running = runTick()
 		if not running then
+			endMatch()
 			break
 		end
 	end

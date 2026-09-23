@@ -3,7 +3,7 @@
 -- NameBoxCalculator; on screen the name is size * zoom pixels tall and the
 -- troop line below it troopSizeMultiplier (0.6) of that.
 
-local Format = require(script.Parent.Format)
+local Format = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Format"))
 
 local MIN_TEXT = 7 -- px; smaller names are hidden (upstream culls tiny names too)
 local MAX_TEXT = 100 -- Roblox TextSize cap

@@ -12,9 +12,11 @@ local MapLoader = require(Shared:WaitForChild("MapLoader"))
 local Net = require(Shared:WaitForChild("Net"))
 local TerrainColors = require(Shared:WaitForChild("TerrainColors"))
 
+local AttacksDisplay = require(script.Parent:WaitForChild("AttacksDisplay"))
 local BuildMenu = require(script.Parent:WaitForChild("BuildMenu"))
 local ControlPanel = require(script.Parent:WaitForChild("ControlPanel"))
-local Format = require(script.Parent:WaitForChild("Format"))
+local EventsDisplay = require(script.Parent:WaitForChild("EventsDisplay"))
+local Format = require(Shared:WaitForChild("Format"))
 local Hud = require(script.Parent:WaitForChild("Hud"))
 local MapCamera = require(script.Parent:WaitForChild("MapCamera"))
 local NameLayer = require(script.Parent:WaitForChild("NameLayer"))
@@ -23,6 +25,7 @@ local RadialMenu = require(script.Parent:WaitForChild("RadialMenu"))
 local SpawnRing = require(script.Parent:WaitForChild("SpawnRing"))
 local TutorialPanel = require(script.Parent:WaitForChild("TutorialPanel"))
 local UnitLayer = require(script.Parent:WaitForChild("UnitLayer"))
+local WorldText = require(script.Parent:WaitForChild("WorldText"))
 
 local player = Players.LocalPlayer
 workspace.CurrentCamera.CameraType = Enum.CameraType.Scriptable
@@ -75,6 +78,7 @@ local tickBase, tickClock = state.tick, os.clock()
 local gameOver = false
 local haveSpawned = false -- seen our own territory at least once
 local shownDeath = false
+local matchEndsAt: number? = nil -- set when the match is over
 
 local function addPlayers(entries)
 	for _, e in entries do
@@ -82,7 +86,7 @@ local function addPlayers(entries)
 		local c = theme:territoryColor(e.id, e.type)
 		renderer:setPlayerColor(e.smallID, c.rgb, c.border)
 		nameLayer:setPlayer(e.smallID, e.name, c.rgb, e.type == "BOT")
-		unitLayer:setOwnerColor(e.smallID, c.rgb)
+		unitLayer:setOwnerColor(e.smallID, c.rgb, c.border)
 		if e.clientID == state.yourClientID then
 			mySmallID = e.smallID
 		end
@@ -258,6 +262,83 @@ camera.onShiftScroll = function(z)
 end
 
 local spawnRing = SpawnRing.new(background, camera, gameMap)
+local worldText = WorldText.new(background, camera)
+
+local function focusPlayer(smallID: number)
+	local x, y = nameLayer:placement(smallID)
+	if x then
+		camera:centerOn(x, y, 3)
+	end
+end
+local function focusUnit(id: number)
+	local tile = unitLayer:unitTile(id)
+	if tile then
+		camera:centerOn(gameMap:x(tile), gameMap:y(tile), 3)
+	end
+end
+local function playerName(smallID: number): string?
+	local e = roster[smallID]
+	return e and e.name
+end
+local function hudVisible(): boolean
+	local mine = myStats()
+	return not inSpawnPhase and not gameOver and mine ~= nil and mine.tiles > 0
+end
+
+local eventsDisplay = EventsDisplay.new({
+	gui = gui,
+	tickNow = function()
+		return tickBase + (os.clock() - tickClock) * 10
+	end,
+	unitActive = function(id)
+		return unitLayer:isActiveUnit(id)
+	end,
+	playerName = playerName,
+	focusPlayer = focusPlayer,
+	focusUnit = focusUnit,
+	visible = hudVisible,
+})
+
+local attacksDisplay = AttacksDisplay.new({
+	parent = controlPanel.column,
+	net = Net,
+	playerName = playerName,
+	playerType = function(smallID)
+		local e = roster[smallID]
+		return e and e.type
+	end,
+	myTroops = function()
+		local mine = myStats()
+		return if mine then mine.troops else 0
+	end,
+	ratio = function()
+		return controlPanel.ratio
+	end,
+	boats = function()
+		if mySmallID == nil then
+			return {}
+		end
+		local out = {}
+		for _, b in unitLayer:boatsOf(mySmallID) do
+			local target = "Wilderness"
+			if b.targetTile then
+				local owner = renderer:ownerAt(b.targetTile)
+				if owner ~= 0 then
+					target = playerName(owner) or ""
+				end
+			end
+			table.insert(out, { id = b.id, troops = b.troops, targetName = target })
+		end
+		return out
+	end,
+	focusPlayer = focusPlayer,
+	focusUnit = focusUnit,
+	visible = hudVisible,
+	myColors = function()
+		local id = mySmallID or 0
+		return unitLayer.colors[id] or Color3.new(1, 1, 1), unitLayer.borders[id] or Color3.new(0, 0, 0)
+	end,
+})
 
 local radialMenu = RadialMenu.new({
 	gui = gui,
@@ -292,6 +373,8 @@ Net.Me.OnClientEvent:Connect(function(info)
 		info.hasCoast = myInfo.hasCoast
 	end
 	myInfo = info
+	attacksDisplay:setAttacks(info.incoming, info.outgoing)
+	worldText:setAttacks(gameMap, info.outgoing, info.incoming)
 	controlPanel:setInfo(info)
 	buildMenu:setInfo(info)
 end)
@@ -373,14 +456,35 @@ Net.Event.OnClientEvent:Connect(function(evt)
 		inSpawnPhase = false
 		buildMenu:refresh()
 		refreshPanelVisibility()
+	elseif evt.type == "MatchEnding" then
+		-- No "keep playing" on Roblox servers: a new match starts shortly.
+		matchEndsAt = os.clock() + evt.seconds
+	elseif evt.type == "MatchReset" then
+		-- Fresh match: rebuild the client from scratch (clone this script).
+		local fresh = script:Clone()
+		gui:Destroy()
+		fresh.Parent = script.Parent
+		script:Destroy()
 	elseif evt.type == "GoldGain" then
 		controlPanel:goldGain(evt.gold)
+	elseif evt.type == "Message" or evt.type == "Incoming" then
+		eventsDisplay:add(evt)
+	elseif evt.type == "Conquest" then
+		-- Conquest popup at the conquered player's name (our conquests only).
+		if evt.conqueror == mySmallID then
+			local x, y = nameLayer:placement(evt.conquered)
+			if x then
+				worldText:conquest(x, y, evt.gold or 0)
+			end
+		end
+	elseif evt.type == "Bonus" then
+		worldText:bonus(gameMap:x(evt.tile), gameMap:y(evt.tile), evt.gold)
 	elseif evt.type == "Win" then
 		gameOver = true
 		if evt.winnerSmallID ~= nil and evt.winnerSmallID == mySmallID then
-			hud:showModal("You Won!", "Keep Playing", true)
+			hud:showModal("You Won!", "OK", true)
 		else
-			hud:showModal(`{evt.winnerName} has won!`, "Keep Playing")
+			hud:showModal(`{evt.winnerName} has won!`, "OK")
 		end
 	end
 end)
@@ -480,6 +584,7 @@ RunService.RenderStepped:Connect(function()
 	renderer:flush()
 	unitLayer:render()
 	tutorial:renderOverlays()
+	worldText:render()
 	-- Spawn ring: during the spawn phase once we picked a spot, and while the
 	-- tutorial points at our territory (syncSpawnOverlay).
 	local showRing = not gameOver and ((inSpawnPhase and haveSpawned) or tutorial:wantsSpawnRing())
@@ -494,6 +599,8 @@ RunService.RenderStepped:Connect(function()
 		else
 			hud:setCountdown(left, if chosen then "Spawn chosen — get ready" else "Click the map to choose where to start")
 		end
+	elseif matchEndsAt then
+		hud:setCountdown(math.max(0, math.ceil(matchEndsAt - os.clock())), "New match starting soon")
 	else
 		hud:setCountdown(nil)
 	end

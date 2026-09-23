@@ -1,25 +1,35 @@
--- Units drawn over the map: transport and trade ships (interpolated between
--- simulation ticks, a ship moves one tile per 100 ms tick) and structures
--- (owner-coloured badges with the upstream icon and their level).
--- Nukes fly on their motion plan (Parabola.motionPath replayed against the
--- estimated tick), SAM missiles and the MIRV carrier are interpolated, and
--- detonations play a flash + shockwave (render-settings nukeShockwave*).
--- Warships show their health when damaged and a ring when selected.
--- TODO(port): trains; incoming-nuke trajectory telegraph.
+-- Units drawn over the map. Mobile units use the upstream sprites
+-- (Sprites.luau, UnitPass): boats, trade ships, warships, nukes, MIRV
+-- warheads, SAM missiles and shells, one sprite pixel per tile, coloured by
+-- owner; nukes / missiles flicker, a warship with a target turns red and its
+-- centre blinks while it retreats. Ships interpolate between ticks, nukes
+-- replay their motion plan (Parabola.motionPath) against the estimated tick.
+-- Structures are owner-coloured badges with the upstream icon and level.
+-- Detonations play a flash + shockwave (render-settings nukeShockwave*).
+-- TODO(port): trains; incoming-nuke trajectory telegraph; H-bomb glow.
 
 local Parabola = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Parabola"))
 
-local Format = require(script.Parent.Format)
 local Icons = require(script.Parent.Icons)
+local Sprites = require(script.Parent.Sprites)
 
-local NUKE_ICON = { ["Atom Bomb"] = "atomBomb", ["Hydrogen Bomb"] = "hydrogenBomb", MIRV = "mirv" }
+-- FLICKER_TYPES (UnitPass).
+local FLICKER = {
+	["Atom Bomb"] = true,
+	["Hydrogen Bomb"] = true,
+	MIRV = true,
+	["MIRV Warhead"] = true,
+	SAMMissile = true,
+	Shell = true,
+}
+local ANGRY = Color3.new(0.784, 0, 0) -- render-settings unit.angry
+local UNTARGETABLE_ALPHA = 0.6
 -- Config.nukeMagnitudes outer radius, in tiles.
 local BLAST_RADIUS = { ["Atom Bomb"] = 30, ["Hydrogen Bomb"] = 100, ["MIRV Warhead"] = 18 }
 local SHOCKWAVE_SECONDS = 1.5 -- nukeShockwaveDurationMs
 local SHOCKWAVE_FACTOR = 1.5 -- nukeShockwaveRadiusFactor
 
 local TICK_SECONDS = 0.1
-local MIN_SIZE, MAX_SIZE = 7, 26 -- px, ships
 local MIN_STRUCT, MAX_STRUCT = 9, 30 -- px, structures
 
 -- Structure icons (tools/pack-icons.mjs).
@@ -47,13 +57,16 @@ function UnitLayer.new(parent: GuiObject, camera, gameMap)
 		camera = camera,
 		map = gameMap,
 		units = {}, -- id -> entry
-		colors = {}, -- smallID -> Color3
+		colors = {}, -- smallID -> territory Color3
+		borders = {}, -- smallID -> border Color3
 		onChanged = nil :: (() -> ())?, -- structures added / removed / upgraded
 	}, UnitLayer)
 end
 
-function UnitLayer:setOwnerColor(smallID: number, rgb: { number })
+function UnitLayer:setOwnerColor(smallID: number, rgb: { number }, border: { number }?)
 	self.colors[smallID] = Color3.fromRGB(rgb[1], rgb[2], rgb[3])
+	local b = border or rgb
+	self.borders[smallID] = Color3.fromRGB(b[1], b[2], b[3])
 end
 
 local function stroked(parent: Instance, thickness: number, color: Color3?)
@@ -76,90 +89,38 @@ local function textLabel(parent: Instance, name: string): TextLabel
 	return label
 end
 
-local function makeShip(parent: Instance, id: number, withTroops: boolean)
-	local frame = Instance.new("Frame")
-	frame.Name = `Unit{id}`
-	frame.AnchorPoint = Vector2.new(0.5, 0.5)
-	frame.BorderSizePixel = 0
-	frame.ZIndex = 6
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0.5, 0)
-	corner.Parent = frame
-	stroked(frame, 1.5)
-	local label = nil
-	if withTroops then
-		label = textLabel(frame, "Troops")
-		label.AnchorPoint = Vector2.new(0.5, 1)
-		label.Position = UDim2.new(0.5, 0, 0, -2)
-		label.AutomaticSize = Enum.AutomaticSize.XY
-	end
-	frame.Parent = parent
-	return frame, label
-end
-
-local function makeNuke(parent: Instance, id: number, icon: string)
-	local l = Icons.label(parent, icon, 20, { white = true })
-	l.Name = `Nuke{id}`
-	l.AnchorPoint = Vector2.new(0.5, 0.5)
-	l.ZIndex = 8
-	l.ImageColor3 = Color3.fromRGB(255, 90, 70)
-	return l
-end
-
-local function makeWarhead(parent: Instance, id: number)
-	local f = Instance.new("Frame")
-	f.Name = `Warhead{id}`
-	f.AnchorPoint = Vector2.new(0.5, 0.5)
-	f.BorderSizePixel = 0
-	f.BackgroundColor3 = Color3.fromRGB(255, 80, 60)
-	f.ZIndex = 8
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0.5, 0)
-	c.Parent = f
-	f.Parent = parent
-	return f
-end
-
-local function makeWarship(parent: Instance, id: number)
-	local l = Icons.label(parent, "warship", 24, { white = true })
-	l.Name = `Warship{id}`
-	l.AnchorPoint = Vector2.new(0.5, 0.5)
-	l.ZIndex = 7
-	-- Health bar under the ship (upstream BarPass), shown when damaged.
+-- Health bar (BarPass) and selection ring for a warship sprite frame.
+local function addWarshipExtras(frame: Frame)
 	local bar = Instance.new("Frame")
 	bar.Name = "Health"
 	bar.AnchorPoint = Vector2.new(0.5, 0)
-	bar.Position = UDim2.new(0.5, 0, 1, 1)
-	bar.Size = UDim2.new(1, 0, 0, 3)
+	bar.Position = UDim2.new(0.5, 0, 0.85, 0)
+	bar.Size = UDim2.new(0.7, 0, 0, 3)
 	bar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	bar.BorderSizePixel = 0
 	bar.Visible = false
-	bar.ZIndex = 7
-	bar.Parent = l
+	bar.ZIndex = 11
+	bar.Parent = frame
 	local fill = Instance.new("Frame")
 	fill.Name = "Fill"
 	fill.Size = UDim2.fromScale(1, 1)
 	fill.BorderSizePixel = 0
-	fill.ZIndex = 8
+	fill.ZIndex = 12
 	fill.Parent = bar
-	-- Selection ring.
 	local ring = Instance.new("Frame")
 	ring.Name = "Selected"
 	ring.AnchorPoint = Vector2.new(0.5, 0.5)
 	ring.Position = UDim2.fromScale(0.5, 0.5)
-	ring.Size = UDim2.fromScale(1.7, 1.7)
+	ring.Size = UDim2.fromScale(1.1, 1.1)
 	ring.BackgroundTransparency = 1
 	ring.Visible = false
 	ring.ZIndex = 6
-	local rc = Instance.new("UICorner")
-	rc.CornerRadius = UDim.new(0.5, 0)
-	rc.Parent = ring
 	local rs = Instance.new("UIStroke")
 	rs.Color = Color3.new(1, 1, 1)
-	rs.Thickness = 2
+	rs.Thickness = 1.5
 	rs.Parent = ring
-	ring.Parent = l
-	return l, bar, fill, ring
+	ring.Parent = frame
+	return bar, fill, ring
 end
 
 local function makeStructure(parent: Instance, id: number, icon: string)
@@ -209,86 +170,72 @@ function UnitLayer:apply(u)
 		self:_applyStructure(e, u, icon)
 		return
 	end
-	if u.plan then
-		self:_applyPlanned(e, u)
-		return
-	end
-	local isMissile = u.unitType == "SAMMissile" or u.unitType == "MIRV" or u.unitType == "Shell"
-	local isWarship = u.unitType == "Warship"
-	if u.unitType ~= "Transport" and u.unitType ~= "Trade Ship" and not isMissile and not isWarship then
+	if not Sprites.has(u.unitType) then
 		return -- TODO(port): trains
 	end
 	local now = os.clock()
 	if e == nil then
-		local frame, label, hbar, hfill, ring
-		if u.unitType == "MIRV" then
-			frame = makeNuke(self.container, u.id, "mirv")
-		elseif isWarship then
-			frame, hbar, hfill, ring = makeWarship(self.container, u.id)
-		else
-			frame, label = makeShip(self.container, u.id, u.unitType == "Transport")
-		end
+		local frame, bands = Sprites.make(self.container, u.unitType, `Unit{u.id}`)
 		e = {
 			frame = frame,
-			label = label,
+			bands = bands,
+			sprite = true,
+			flicker = FLICKER[u.unitType] == true,
+			hash = (u.id * 0.618) % 1, -- per-unit flicker phase
 			from = u.pos,
 			to = u.pos,
 			t0 = now,
-			small = u.unitType == "Trade Ship",
-			tiny = u.unitType == "SAMMissile" or u.unitType == "Shell",
-			nuke = u.unitType == "MIRV",
-			warship = isWarship,
-			hbar = hbar,
-			hfill = hfill,
-			ring = ring,
 			unitType = u.unitType,
+			warship = u.unitType == "Warship",
 		}
+		if e.warship then
+			e.hbar, e.hfill, e.ring = addWarshipExtras(frame)
+		end
+		if u.plan then
+			local p = u.plan
+			e.planned = true
+			e.path = Parabola.motionPath(self.map, p.src, p.dst, p.speed, p.directionUp)
+			e.startTick = p.startTick
+		end
 		self.units[u.id] = e
-	elseif e.to ~= u.pos then
+	elseif not e.planned and e.to ~= u.pos then
 		e.from = e.to
 		e.to = u.pos
 		e.t0 = now
 	end
 	e.ownerID = u.ownerID
 	e.pos = u.pos
-	if e.nuke then
-		return
-	end
+	e.troops = u.troops
+	e.targetTile = u.targetTile
+	e.angry = u.targetUnitId ~= nil
+	e.retreating = u.warshipRetreating == true or u.isRetreating == true
+	e.untargetable = u.targetable == false
 	if e.warship then
-		local c = self.colors[u.ownerID] or Color3.new(1, 1, 1)
-		e.frame.ImageColor3 = c:Lerp(Color3.new(1, 1, 1), 0.25)
 		local hp, max = u.health or 1, u.maxHealth or 1
 		local frac = math.clamp(hp / math.max(1, max), 0, 1)
 		e.hbar.Visible = frac < 1
 		e.hfill.Size = UDim2.fromScale(frac, 1)
 		e.hfill.BackgroundColor3 = Color3.fromRGB(230, 60, 50):Lerp(Color3.fromRGB(80, 210, 90), frac)
 		e.ring.Visible = self.selected == u.id
-		return
 	end
-	local color = if e.tiny then (if u.unitType == "Shell" then Color3.fromRGB(255, 170, 60) else Color3.new(1, 1, 1)) else self.colors[u.ownerID] or Color3.new(1, 1, 1)
-	e.frame.BackgroundColor3 = if u.isRetreating then color:Lerp(Color3.new(0.5, 0.5, 0.5), 0.6) else color
-	if e.label then
-		e.label.Text = Format.renderTroops(u.troops or 0)
-	end
+	self:_paintSprite(e, 0)
 end
 
--- Nukes with a motion plan: the path is computed once and replayed.
-function UnitLayer:_applyPlanned(e, u)
-	if e == nil then
-		local icon = NUKE_ICON[u.unitType]
-		local frame = if icon then makeNuke(self.container, u.id, icon) else makeWarhead(self.container, u.id)
-		local p = u.plan
-		e = {
-			frame = frame,
-			planned = true,
-			warhead = icon == nil,
-			path = Parabola.motionPath(self.map, p.src, p.dst, p.speed, p.directionUp),
-			startTick = p.startTick,
-			unitType = u.unitType,
-			ownerID = u.ownerID,
-		}
-		self.units[u.id] = e
+-- unit.frag.glsl colouring for one sprite at estimated tick `tick`.
+function UnitLayer:_paintSprite(e, tick: number)
+	local territory = self.colors[e.ownerID] or Color3.new(1, 1, 1)
+	local border = self.borders[e.ownerID] or territory
+	local center = nil
+	if e.flicker then
+		territory, border = Sprites.flicker(tick, e.hash)
+	elseif e.warship and e.angry then
+		territory = ANGRY
 	end
+	if e.retreating and (tick * 0.07) % 1 >= 0.5 then
+		center = Color3.new(0, 0, 0)
+	end
+	Sprites.paint(e.bands, territory, border, center)
+	Sprites.setTransparency(e.bands, if e.flicker and e.untargetable then 1 - UNTARGETABLE_ALPHA else 0)
 end
 
 -- Flash + expanding shockwave ring over a blast of `radius` tiles.
@@ -415,6 +362,26 @@ function UnitLayer:setSelected(id: number?)
 	end
 end
 
+-- Our transport boats { id, troops, targetTile } (AttacksDisplay).
+function UnitLayer:boatsOf(ownerID: number)
+	local out = {}
+	for id, e in self.units do
+		if e.unitType == "Transport" and e.ownerID == ownerID then
+			table.insert(out, { id = id, troops = e.troops or 0, targetTile = e.targetTile })
+		end
+	end
+	table.sort(out, function(a, b)
+		return a.id < b.id
+	end)
+	return out
+end
+
+-- Map tile of a live unit, or nil.
+function UnitLayer:unitTile(id: number): number?
+	local e = self.units[id]
+	return e and (e.to or e.pos)
+end
+
 function UnitLayer:isActiveUnit(id: number): boolean
 	return self.units[id] ~= nil
 end
@@ -442,41 +409,35 @@ end
 -- Per-frame: interpolate ship positions and scale everything with zoom.
 function UnitLayer:render()
 	local camera, map = self.camera, self.map
-	local size = math.clamp(camera.zoom * 2.2, MIN_SIZE, MAX_SIZE)
 	local now = os.clock()
 	local tick = if self.tickNow then self.tickNow() else 0
+	-- One sprite pixel per tile (never below one screen pixel).
+	local cellPx = Sprites.CELL * math.max(camera.zoom, 1)
 	for _, e in self.units do
 		if e.isStructure then
 			self:_place(e)
 			continue
 		end
+		local x, y
 		if e.planned then
 			-- Tile index on the plan: 0 = launch tile until startTick.
 			local t = math.max(0, tick - e.startTick + 1)
 			local n = #e.path
 			local i = math.min(math.floor(t), n - 1)
 			local frac = if i >= n - 1 then 0 else t - math.floor(t)
-			local a, b = e.path[i + 1], e.path[math.min(i + 2, n)]
-			local fx, fy = map:x(a), map:y(a)
-			local p = camera:screenPos(fx + (map:x(b) - fx) * frac, fy + (map:y(b) - fy) * frac)
-			local s = if e.warhead then math.clamp(camera.zoom * 1.2, 4, 9) else math.clamp(camera.zoom * 3, 14, 30)
-			e.frame.Position = UDim2.fromOffset(p.X, p.Y)
-			e.frame.Size = UDim2.fromOffset(s, s)
-			continue
+			local pa, pb = e.path[i + 1], e.path[math.min(i + 2, n)]
+			x = map:x(pa) + (map:x(pb) - map:x(pa)) * frac
+			y = map:y(pa) + (map:y(pb) - map:y(pa)) * frac
+		else
+			local a = math.clamp((now - e.t0) / TICK_SECONDS, 0, 1)
+			x = map:x(e.from) + (map:x(e.to) - map:x(e.from)) * a
+			y = map:y(e.from) + (map:y(e.to) - map:y(e.from)) * a
 		end
-		local a = math.clamp((now - e.t0) / TICK_SECONDS, 0, 1)
-		local fx, fy = map:x(e.from), map:y(e.from)
-		local tx, ty = map:x(e.to), map:y(e.to)
-		local p = camera:screenPos(fx + (tx - fx) * a, fy + (ty - fy) * a)
-		local s = if e.tiny then math.max(4, size * 0.35)
-			elseif e.small then size * 0.6
-			elseif e.nuke then math.clamp(camera.zoom * 3, 14, 30)
-			elseif e.warship then math.clamp(camera.zoom * 3.2, 14, 34)
-			else size
+		local p = camera:screenPos(x, y)
 		e.frame.Position = UDim2.fromOffset(p.X, p.Y)
-		e.frame.Size = UDim2.fromOffset(s, s)
-		if e.label then
-			e.label.TextSize = math.max(10, size * 0.7)
+		e.frame.Size = UDim2.fromOffset(cellPx, cellPx)
+		if e.flicker or e.retreating then
+			self:_paintSprite(e, tick)
 		end
 	end
 	if self.explosions then

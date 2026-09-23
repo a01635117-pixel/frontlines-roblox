@@ -148,7 +148,8 @@ function WinCheck:checkWinnerFFA()
 		return
 	end
 	local max = sorted[1]
-	if self:_hasWon(max:numTilesOwned()) then
+	local won = if self.mg:config():gameConfig().robloxWinRule then self:_hasWonRoblox(max) else self:_hasWon(max:numTilesOwned())
+	if won then
 		self.mg:setWinner(max, nil)
 		print(`{max:name()} has won the game`)
 		self._active = false
@@ -169,6 +170,25 @@ function WinCheck:_hasWon(tilesOwned: number): boolean
 	end
 	local numTilesWithoutFallout = mg:numLandTiles() - mg:numTilesWithFallout()
 	return tilesOwned * 100 > numTilesWithoutFallout * mg:config():percentageTilesOwnedToWin(timeElapsed)
+end
+
+-- Roblox servers (gameConfig.robloxWinRule, not upstream): no timers and no
+-- "keep playing" — the leader wins only with 95 % of the non-fallout land
+-- while no other living player can still afford a MIRV.
+local ROBLOX_WIN_PERCENT = 95
+function WinCheck:_hasWonRoblox(leader): boolean
+	local mg = self.mg
+	local numTilesWithoutFallout = mg:numLandTiles() - mg:numTilesWithFallout()
+	if leader:numTilesOwned() * 100 < numTilesWithoutFallout * ROBLOX_WIN_PERCENT then
+		return false
+	end
+	local mirv = mg:config():unitInfo(GameTypes.UnitType.MIRV)
+	for _, p in mg:players() do
+		if p ~= leader and p:isAlive() and p:gold() >= mirv.cost(mg, p) then
+			return false
+		end
+	end
+	return true
 end
 
 function WinCheck:checkWinnerTeam()

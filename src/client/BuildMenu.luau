@@ -14,7 +14,7 @@
 
 local UserInputService = game:GetService("UserInputService")
 
-local Format = require(script.Parent.Format)
+local Format = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Format"))
 local Icons = require(script.Parent.Icons)
 local Style = require(script.Parent.Style)
 

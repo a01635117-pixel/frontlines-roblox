@@ -156,6 +156,9 @@ function UnitImpl:toUpdate()
 		level = self._level,
 		markedForDeletion = self._deletionAt or false,
 		targetable = self._targetable,
+		-- replication only (UnitPass flags)
+		targetUnitId = if self._targetUnit then self._targetUnit:id() else nil,
+		warshipRetreating = if self._warshipState then self._warshipState.state ~= "patrolling" else nil,
 	}
 end
 

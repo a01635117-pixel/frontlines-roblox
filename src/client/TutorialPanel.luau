@@ -4,7 +4,7 @@
 -- keeps it in localStorage). Steps that don't fit the game's config are
 -- skipped, so "Step n of N" adapts exactly like upstream.
 
-local Format = require(script.Parent.Format)
+local Format = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Format"))
 local Style = require(script.Parent.Style)
 
 local C, F = Style.color, Style.font

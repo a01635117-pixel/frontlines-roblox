@@ -7,6 +7,7 @@
 -- Motion plans (upstream's client-side interpolation records) are replaced by
 -- per-move unit updates in this port's replication.
 
+local Format = require(game:GetService("ReplicatedStorage").Shared.Format)
 local Core = script.Parent.Parent
 local GameTypes = require(Core.GameTypes)
 local PathFinderMod = require(Core.Pathfinding.PathFinder)
@@ -116,7 +117,7 @@ function TransportShipExecution:init(mg, ticks: number)
 	if self.target:id() ~= mg:terraNullius():id() then
 		mg:displayIncomingUnit(
 			self.boat:id(),
-			`Naval invasion incoming from {attacker:displayName()} ({self.boat:troops()})`,
+			`Naval invasion incoming from {attacker:displayName()} ({Format.renderTroops(self.boat:troops())})`,
 			MessageType.NAVAL_INVASION_INBOUND,
 			self.target:id()
 		)

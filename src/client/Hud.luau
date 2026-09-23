@@ -3,7 +3,7 @@
 
 local GuiService = game:GetService("GuiService")
 
-local Format = require(script.Parent.Format)
+local Format = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Format"))
 
 local PANEL_COLOR = Color3.fromRGB(24, 26, 32)
 local PANEL_TRANSPARENCY = 0.2
@@ -212,7 +212,8 @@ function Hud:setHover(text: string?)
 end
 
 -- Modal with a title and one dismiss button (upstream WinModal texts:
--- "You died" + "Spectate", "You Won!" / "X has won!" + "Keep Playing").
+-- "You died" + "Spectate", "You Won!" / "X has won!" + "OK"; no "Keep Playing"
+-- on Roblox servers, a new match follows).
 -- TODO(port): "Play Again" once there is a lobby to return to.
 function Hud:showModal(title: string, buttonText: string, isWin: boolean?)
 	self.modalTitle.Text = title
