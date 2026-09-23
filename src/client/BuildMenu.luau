@@ -1,92 +1,84 @@
--- Build controls, following OpenFront's UnitDisplay hotbar + build ghost +
--- radial menu:
---   * bottom hotbar with every enabled buildable: glyph, owned levels, hotkey;
---     hover shows name and price
---   * keys 1..0 (and numpad) or a hotbar click pick a unit; a ghost follows
---     the cursor (green = can build, blue = upgrades the structure in range,
---     red = not here) and a left click places it; Esc / right click cancels
---   * right click on the map opens a context menu with the build options for
---     that tile and "Delete" for our closest structure (upstream radius 5)
--- The server resolves build vs upgrade exactly like upstream; availability
--- comes from Net.Query (PlayerImpl:buildableUnits on the server).
+-- Build controls, ported from upstream UnitDisplay.ts (hotbar),
+-- InputHandler.ts (build keybinds) and BuildPreviewController.ts (ghost):
+--   * hotbar under the control panel: hotkey, icon, total levels owned;
+--     greyed (opacity-40) when it can't be afforded; hover tooltip with
+--     name [key], description and price
+--   * Digit1..Digit0 / numpad pick the ghost; the same key again toggles the
+--     x5 upgrade multiplier (setGhostStructure); Esc clears it
+--   * the ghost follows the cursor with the unit icon, the cost label and the
+--     range circle (defense post); a click upgrades the structure in range or
+--     builds, and clears the ghost (bombs keep it); a click where nothing can
+--     be built just clears it
+--   * right click opens a menu with the build options and "Delete"
+--     TODO(port): upstream's radial menu (attack / boat / ally / build / delete)
+-- Availability comes from Net.Query (PlayerImpl:buildableUnits on the server).
 
 local UserInputService = game:GetService("UserInputService")
 
 local Format = require(script.Parent.Format)
+local Icons = require(script.Parent.Icons)
+local Style = require(script.Parent.Style)
 
-local PANEL_COLOR = Color3.fromRGB(24, 26, 32)
-local TEXT = Color3.fromRGB(235, 235, 240)
-local MUTED = Color3.fromRGB(150, 155, 165)
-local GOLD = Color3.fromRGB(255, 214, 90)
-local OK_COLOR = Color3.fromRGB(80, 200, 120)
-local UPGRADE_COLOR = Color3.fromRGB(80, 160, 255)
-local BAD_COLOR = Color3.fromRGB(230, 70, 70)
-local FONT = Enum.Font.GothamMedium
-local FONT_BOLD = Enum.Font.GothamBold
+local C, F = Style.color, Style.font
 
--- Upstream BuildMenus order with the default keybinds (UserSettings).
+-- UserSettings default keybinds + UnitDisplay order, icons and texts (en.json).
 local ITEMS = {
-	{ unit = "City", key = Enum.KeyCode.One, numpad = Enum.KeyCode.KeypadOne, hotkey = "1" },
-	{ unit = "Factory", key = Enum.KeyCode.Two, numpad = Enum.KeyCode.KeypadTwo, hotkey = "2" },
-	{ unit = "Port", key = Enum.KeyCode.Three, numpad = Enum.KeyCode.KeypadThree, hotkey = "3" },
-	{ unit = "Defense Post", key = Enum.KeyCode.Four, numpad = Enum.KeyCode.KeypadFour, hotkey = "4" },
-	{ unit = "Missile Silo", key = Enum.KeyCode.Five, numpad = Enum.KeyCode.KeypadFive, hotkey = "5" },
-	{ unit = "SAM Launcher", key = Enum.KeyCode.Six, numpad = Enum.KeyCode.KeypadSix, hotkey = "6" },
-	{ unit = "Warship", key = Enum.KeyCode.Seven, numpad = Enum.KeyCode.KeypadSeven, hotkey = "7" },
-	{ unit = "Atom Bomb", key = Enum.KeyCode.Eight, numpad = Enum.KeyCode.KeypadEight, hotkey = "8" },
-	{ unit = "Hydrogen Bomb", key = Enum.KeyCode.Nine, numpad = Enum.KeyCode.KeypadNine, hotkey = "9" },
-	{ unit = "MIRV", key = Enum.KeyCode.Zero, numpad = Enum.KeyCode.KeypadZero, hotkey = "0" },
+	{ unit = "City", key = Enum.KeyCode.One, numpad = Enum.KeyCode.KeypadOne, hotkey = "1", icon = "city", count = true, desc = "Increases max population" },
+	{ unit = "Factory", key = Enum.KeyCode.Two, numpad = Enum.KeyCode.KeypadTwo, hotkey = "2", icon = "factory", count = true, desc = "Creates railroads and spawns trains" },
+	{ unit = "Port", key = Enum.KeyCode.Three, numpad = Enum.KeyCode.KeypadThree, hotkey = "3", icon = "port", count = true, desc = "Sends trade ships to generate gold" },
+	{ unit = "Defense Post", key = Enum.KeyCode.Four, numpad = Enum.KeyCode.KeypadFour, hotkey = "4", icon = "defensePost", count = true, desc = "Increases defenses of nearby borders" },
+	{ unit = "Missile Silo", key = Enum.KeyCode.Five, numpad = Enum.KeyCode.KeypadFive, hotkey = "5", icon = "missileSilo", count = true, desc = "Used to launch nukes" },
+	{ unit = "SAM Launcher", key = Enum.KeyCode.Six, numpad = Enum.KeyCode.KeypadSix, hotkey = "6", icon = "samLauncher", count = true, desc = "Defends against incoming nukes" },
+	{ unit = "Warship", key = Enum.KeyCode.Seven, numpad = Enum.KeyCode.KeypadSeven, hotkey = "7", icon = "warship", count = true, desc = "Captures trade ships, destroys ships and boats", hint = "⇧ Hold Shift and drag to select multiple warships at once" },
+	{ unit = "Atom Bomb", key = Enum.KeyCode.Eight, numpad = Enum.KeyCode.KeypadEight, hotkey = "8", icon = "atomBomb", count = false, desc = "Small explosion" },
+	{ unit = "Hydrogen Bomb", key = Enum.KeyCode.Nine, numpad = Enum.KeyCode.KeypadNine, hotkey = "9", icon = "hydrogenBomb", count = false, desc = "Large explosion" },
+	{ unit = "MIRV", key = Enum.KeyCode.Zero, numpad = Enum.KeyCode.KeypadZero, hotkey = "0", icon = "mirv", count = false, desc = "Huge explosion, only targets selected player" },
+}
+local ITEM_BY_UNIT = {}
+for _, item in ITEMS do
+	ITEM_BY_UNIT[item.unit] = item
+end
+
+-- Tutorial highlight names (Tutorial.ts) -> unit.
+local HIGHLIGHT_UNIT = {
+	city = "City",
+	factory = "Factory",
+	port = "Port",
+	defense_post = "Defense Post",
+	silo = "Missile Silo",
+	sam = "SAM Launcher",
+	warship = "Warship",
+	atom = "Atom Bomb",
+	hydrogen = "Hydrogen Bomb",
+	mirv = "MIRV",
 }
 
-local GLYPH = {
-	City = "C",
-	Factory = "F",
-	Port = "P",
-	["Defense Post"] = "D",
-	["Missile Silo"] = "M",
-	["SAM Launcher"] = "S",
-	Warship = "W",
-	["Atom Bomb"] = "A",
-	["Hydrogen Bomb"] = "H",
-	MIRV = "V",
-}
-
+local RANGE = { ["Defense Post"] = 30 } -- Config.defensePostRange()
 local QUERY_INTERVAL = 0.12 -- s between ghost availability queries
+local OK_COLOR = C.green400
+local UPGRADE_COLOR = C.blue400
+local BAD_COLOR = C.red500
 
 local BuildMenu = {}
 BuildMenu.__index = BuildMenu
+BuildMenu.ITEMS = ITEMS
 
-local function corner(parent: Instance, radius: number)
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, radius)
-	c.Parent = parent
-end
-
-local function text(parent: Instance, name: string, s: string, size: number, font: Enum.Font?, color: Color3?): TextLabel
-	local l = Instance.new("TextLabel")
-	l.Name = name
-	l.BackgroundTransparency = 1
-	l.Font = font or FONT
-	l.TextSize = size
-	l.TextColor3 = color or TEXT
-	l.Text = s
-	l.Parent = parent
-	return l
-end
-
--- deps: { gui, camera, map, net, unitLayer, tileAt(Vector2) -> tile?,
---         mySmallID() -> number?, canAct() -> boolean }
+-- deps: { gui, hotbarParent, camera, map, net, unitLayer, tileAt(Vector2) -> tile?,
+--         mousePos() -> Vector2, mySmallID() -> number?, myColor() -> Color3?, canAct() -> boolean }
 function BuildMenu.new(deps)
 	local self = setmetatable({
 		deps = deps,
-		costs = {}, -- unit -> gold | false (disabled)
+		costs = {}, -- unit -> gold
+		disabled = {}, -- unit -> true (config / not ported yet)
 		gold = 0,
 		selected = nil :: string?,
+		multiplier = 1, -- uiState.upgradeMultiplier
 		ghostTile = nil :: number?,
 		ghostInfo = nil,
 		queryBusy = false,
 		lastQuery = 0,
 		buttons = {},
+		highlight = nil :: string?,
 	}, BuildMenu)
 	self:_buildHotbar()
 	self:_buildGhost()
@@ -95,111 +87,181 @@ function BuildMenu.new(deps)
 	return self
 end
 
--- Hotbar -----------------------------------------------------------------------------
+-- Hotbar ---------------------------------------------------------------------------
 
 function BuildMenu:_buildHotbar()
-	local bar = Instance.new("Frame")
-	bar.Name = "BuildBar"
-	bar.AnchorPoint = Vector2.new(0.5, 1)
-	bar.Position = UDim2.new(0, 0, 1, -12)
-	bar.AutomaticSize = Enum.AutomaticSize.X
-	bar.Size = UDim2.fromOffset(0, 64)
-	bar.BackgroundColor3 = PANEL_COLOR
-	bar.BackgroundTransparency = 0.2
-	bar.BorderSizePixel = 0
-	bar.Active = true
-	bar.Visible = false
-	corner(bar, 8)
-	local pad = Instance.new("UIPadding")
-	pad.PaddingLeft, pad.PaddingRight = UDim.new(0, 4), UDim.new(0, 4)
-	pad.PaddingTop, pad.PaddingBottom = UDim.new(0, 4), UDim.new(0, 4)
-	pad.Parent = bar
-	local layout = Instance.new("UIListLayout")
-	layout.FillDirection = Enum.FillDirection.Horizontal
-	layout.Padding = UDim.new(0, 4)
-	layout.SortOrder = Enum.SortOrder.LayoutOrder
-	layout.Parent = bar
-	bar.Parent = self.deps.gui
-	self.bar = bar
-
-	local tip = Instance.new("Frame")
-	tip.Name = "BuildTooltip"
+	-- Tooltip: bg-gray-800/90 rounded-sm p-1 text-xs text-gray-200 text-center w-max
+	local tip = Style.frame(self.deps.gui, "BuildTooltip", C.gray800, 0.9)
 	tip.AnchorPoint = Vector2.new(0.5, 1)
-	tip.Position = UDim2.new(0, 0, 1, -84)
 	tip.AutomaticSize = Enum.AutomaticSize.XY
-	tip.BackgroundColor3 = PANEL_COLOR
-	tip.BackgroundTransparency = 0.1
-	tip.BorderSizePixel = 0
 	tip.Visible = false
-	corner(tip, 6)
-	local tpad = Instance.new("UIPadding")
-	tpad.PaddingLeft, tpad.PaddingRight = UDim.new(0, 10), UDim.new(0, 10)
-	tpad.PaddingTop, tpad.PaddingBottom = UDim.new(0, 6), UDim.new(0, 6)
-	tpad.Parent = tip
-	local tipText = text(tip, "Text", "", 15, FONT_BOLD)
-	tipText.AutomaticSize = Enum.AutomaticSize.XY
-	tipText.RichText = true
-	tip.Parent = self.deps.gui
-	self.tip, self.tipText = tip, tipText
+	tip.ZIndex = 40
+	Style.corner(tip, 2)
+	Style.padding(tip, 4)
+	local tipLayout = Style.column(tip, 0)
+	tipLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	local tipTitle = Style.text(tip, "Title", "", 14, F.bold, C.gray200)
+	tipTitle.LayoutOrder = 1
+	tipTitle.ZIndex = 41
+	local tipDesc = Style.text(tip, "Desc", "", 12, F.medium, C.gray200)
+	tipDesc.LayoutOrder = 2
+	tipDesc.ZIndex = 41
+	local descPad = Style.padding(tipDesc, 8)
+	descPad.PaddingTop = UDim.new(0, 12) -- mb-1 + p-2
+	local tipHint = Style.text(tip, "Hint", "", 10, F.medium, Color3.fromHex("#67e8f9"))
+	tipHint.LayoutOrder = 3
+	tipHint.ZIndex = 41
+	Style.padding(tipHint, 8, 4)
+	local costRow = Style.frame(tip, "Cost")
+	costRow.LayoutOrder = 4
+	costRow.AutomaticSize = Enum.AutomaticSize.XY
+	Style.row(costRow, 4).HorizontalAlignment = Enum.HorizontalAlignment.Center
+	local coin = Icons.label(costRow, "goldCoin", 13)
+	coin.LayoutOrder = 1
+	coin.ZIndex = 41
+	local costText = Style.text(costRow, "Text", "", 12, F.medium, C.yellow300)
+	costText.LayoutOrder = 2
+	costText.ZIndex = 41
+	self.tip, self.tipTitle, self.tipDesc, self.tipHint, self.tipCost = tip, tipTitle, tipDesc, tipHint, costText
 
 	for i, item in ITEMS do
+		-- flex-col items-center relative > border border-slate-500 rounded-sm px-0.5 pb-0.5 flex items-center gap-0.5
 		local b = Instance.new("TextButton")
 		b.Name = item.unit
 		b.LayoutOrder = i
-		b.Size = UDim2.fromOffset(52, 56)
-		b.BackgroundColor3 = Color3.fromRGB(45, 48, 58)
-		b.AutoButtonColor = true
 		b.Text = ""
-		b.Visible = false
-		corner(b, 6)
-		local stroke = Instance.new("UIStroke")
-		stroke.Thickness = 2
-		stroke.Color = OK_COLOR
-		stroke.Enabled = false
-		stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-		stroke.Parent = b
-		local glyph = text(b, "Glyph", GLYPH[item.unit], 22, FONT_BOLD)
-		glyph.Size = UDim2.new(1, 0, 0, 30)
-		glyph.Position = UDim2.fromOffset(0, 6)
-		local count = text(b, "Count", "0", 12, FONT_BOLD, MUTED)
-		count.Size = UDim2.new(1, -6, 0, 14)
-		count.Position = UDim2.fromOffset(0, 38)
-		count.TextXAlignment = Enum.TextXAlignment.Right
-		local key = text(b, "Key", item.hotkey, 11, FONT_BOLD, MUTED)
-		key.Size = UDim2.fromOffset(14, 14)
-		key.Position = UDim2.fromOffset(4, 2)
-		key.TextXAlignment = Enum.TextXAlignment.Left
-		b.Parent = bar
+		b.AutoButtonColor = false
+		b.BorderSizePixel = 0
+		b.BackgroundColor3 = C.slate400
+		b.BackgroundTransparency = 1
+		b.AutomaticSize = Enum.AutomaticSize.XY
+		b.Size = UDim2.fromOffset(0, 0)
+		Style.corner(b, 2)
+		local stroke = Style.stroke(b, C.slate500)
+		Style.padding(b, 2, 0, 0, 2)
+		Style.row(b, 2, Enum.VerticalAlignment.Top)
+		local scale = Instance.new("UIScale")
+		scale.Parent = b
+
+		-- ml-0.5 text-[10px] relative -top-1 text-gray-400
+		local key = Style.text(b, "Key", item.hotkey, 10, F.medium, C.gray400)
+		key.LayoutOrder = 1
+		key.AutomaticSize = Enum.AutomaticSize.None
+		key.Size = UDim2.fromOffset(8, 12)
+		key.TextYAlignment = Enum.TextYAlignment.Top
+		-- flex items-center gap-0.5 pt-0.5: icon size-5 + text-xs count
+		local content = Style.frame(b, "Content")
+		content.LayoutOrder = 2
+		content.AutomaticSize = Enum.AutomaticSize.XY
+		Style.padding(content, 0, 0, 2, 0)
+		Style.row(content, 2)
+		local icon = Icons.label(content, item.icon, 20, { white = true })
+		icon.LayoutOrder = 1
+		local count = nil
+		if item.count then
+			count = Style.text(content, "Count", "0", 12, F.medium)
+			count.LayoutOrder = 2
+		end
+		b.Parent = self.deps.hotbarParent
+
 		b.Activated:Connect(function()
-			self:select(if self.selected == item.unit then nil else item.unit)
+			-- Click toggles; only affordable units can be picked.
+			if self.selected == item.unit then
+				self:select(nil)
+			elseif self:canBuild(item.unit) then
+				self:select(item.unit)
+			end
 		end)
 		b.MouseEnter:Connect(function()
 			self.hovered = item.unit
 			self:_refreshTip()
+			self:_refreshButton(item)
 		end)
 		b.MouseLeave:Connect(function()
 			if self.hovered == item.unit then
 				self.hovered = nil
 				self:_refreshTip()
+				self:_refreshButton(item)
 			end
 		end)
-		self.buttons[item.unit] = { button = b, glyph = glyph, count = count, stroke = stroke }
+		self.buttons[item.unit] = { button = b, stroke = stroke, icon = icon, key = key, count = count, scale = scale }
 	end
+end
+
+-- UnitDisplay.canBuild: affordable, bombs need a silo, warships a port.
+function BuildMenu:canBuild(unit: string): boolean
+	if self.disabled[unit] then
+		return false
+	end
+	local cost = self.costs[unit]
+	if cost == nil or cost > self.gold then
+		return false
+	end
+	local me = self.deps.mySmallID()
+	if unit == "Atom Bomb" or unit == "Hydrogen Bomb" or unit == "MIRV" then
+		return me ~= nil and self.deps.unitLayer:totalLevels(me, "Missile Silo") > 0
+	elseif unit == "Warship" then
+		return me ~= nil and self.deps.unitLayer:totalLevels(me, "Port") > 0
+	end
+	return true
 end
 
 function BuildMenu:_refreshTip()
-	local u = self.hovered
-	local cost = u and self.costs[u]
-	self.tip.Visible = u ~= nil and cost ~= nil and cost ~= false
-	if self.tip.Visible then
-		local color = if cost <= self.gold then "#ffd65a" else "#e64646"
-		self.tipText.Text = `{u}  <font color="{color}">{Format.renderNumber(cost)} gold</font>`
+	local item = self.hovered and ITEM_BY_UNIT[self.hovered]
+	self.tip.Visible = item ~= nil
+	if not item then
+		return
+	end
+	self.tipTitle.Text = `{item.unit} [{item.hotkey}]`
+	self.tipDesc.Text = item.desc
+	self.tipHint.Visible = item.hint ~= nil
+	self.tipHint.Text = item.hint or ""
+	self.tipCost.Text = Format.renderNumber(self.costs[item.unit] or 0)
+	-- absolute bottom-full left-1/2 -translate-x-1/2 mb-1
+	local b = self.buttons[item.unit].button
+	self.tip.Position = UDim2.fromOffset(b.AbsolutePosition.X + b.AbsoluteSize.X / 2, b.AbsolutePosition.Y - 4)
+end
+
+function BuildMenu:_refreshButton(item)
+	local b = self.buttons[item.unit]
+	local me = self.deps.mySmallID()
+	local selected = self.selected == item.unit
+	local highlighted = self.highlight ~= nil and HIGHLIGHT_UNIT[self.highlight] == item.unit
+	local dim = if self:canBuild(item.unit) then 0 else 0.6 -- opacity-40
+	b.icon.ImageTransparency = dim
+	b.key.TextTransparency = dim
+	b.stroke.Transparency = dim
+	if b.count then
+		b.count.TextTransparency = dim
+		b.count.Text = if me then Format.renderNumber(self.deps.unitLayer:totalLevels(me, item.unit)) else "0"
+	end
+	-- selected: bg-slate-400/20; hover: bg-gray-800 (or gray-400/10 when selected);
+	-- tutorial: scale-130, border gold, bg gold/25
+	if highlighted then
+		b.button.BackgroundColor3 = C.cyberYellow
+		b.button.BackgroundTransparency = 0.75
+		b.stroke.Color = C.cyberYellow
+		b.stroke.Transparency = 0
+		b.scale.Scale = 1.3
+	else
+		b.stroke.Color = C.slate500
+		b.scale.Scale = 1
+		if selected then
+			b.button.BackgroundColor3 = C.slate400
+			b.button.BackgroundTransparency = if self.hovered == item.unit then 0.9 else 0.8
+		elseif self.hovered == item.unit then
+			b.button.BackgroundColor3 = C.gray800
+			b.button.BackgroundTransparency = 0
+		else
+			b.button.BackgroundTransparency = 1
+		end
 	end
 end
 
--- Prices from the server (Net.BuildInfo) and our current gold.
-function BuildMenu:setCosts(costs)
-	self.costs = costs
+-- Prices / disabled units from Net.Me, and our gold from Stats.
+function BuildMenu:setInfo(info)
+	self.costs = info.costs or self.costs
+	self.disabled = info.disabled or self.disabled
 	self:refresh()
 end
 
@@ -209,78 +271,112 @@ function BuildMenu:setGold(gold: number)
 end
 
 function BuildMenu:refresh()
-	local me = self.deps.mySmallID()
-	local visible = self.deps.canAct()
-	local any = false
 	for _, item in ITEMS do
-		local b = self.buttons[item.unit]
-		local cost = self.costs[item.unit]
-		local enabled = cost ~= nil and cost ~= false
-		b.button.Visible = enabled
-		any = any or enabled
-		if enabled then
-			local affordable = cost <= self.gold
-			b.glyph.TextColor3 = if affordable then TEXT else MUTED
-			b.button.BackgroundTransparency = if affordable then 0 else 0.5
-			b.count.Text = if me then tostring(self.deps.unitLayer:totalLevels(me, item.unit)) else "0"
-			b.stroke.Enabled = self.selected == item.unit
-		end
+		-- renderUnitItem: config-disabled units are not shown. Units that are
+		-- only waiting for the port (nukes, SAM, warship, factory) stay visible
+		-- and greyed so the bar matches upstream's full layout.
+		self.buttons[item.unit].button.Visible = true
+		self:_refreshButton(item)
 	end
-	self.bar.Visible = visible and any
-	-- Centred, but never over the control panel (bottom left, 12 + 300 px).
-	local screenW = self.deps.gui.AbsoluteSize.X
-	local half = self.bar.AbsoluteSize.X / 2
-	self.bar.Position = UDim2.new(0, math.max(screenW / 2, 12 + 300 + 8 + half), 1, -12)
-	self.tip.Position = UDim2.new(0, self.bar.Position.X.Offset, 1, -84)
-	if not visible and self.selected then
+	if not self.deps.canAct() and self.selected then
 		self:select(nil)
 	end
-	self:_refreshTip()
+	if self.tip.Visible then
+		self:_refreshTip()
+	end
 end
 
--- Ghost ------------------------------------------------------------------------------
+-- Tutorial hotbar highlight (+ bobbing ▼ arrow above the button).
+function BuildMenu:setHighlight(target: string?)
+	if self.highlight == target then
+		return
+	end
+	self.highlight = target
+	if self.arrow then
+		self.arrow:Destroy()
+		self.arrow = nil
+	end
+	local unit = target and HIGHLIGHT_UNIT[target]
+	local b = unit and self.buttons[unit]
+	if b then
+		local arrow = Style.text(self.deps.gui, "TutorialArrow", "▼", 15, F.bold, C.cyberYellow)
+		arrow.AnchorPoint = Vector2.new(0.5, 1)
+		arrow.ZIndex = 45
+		Style.textShadow(arrow, 0.1)
+		self.arrow = arrow
+		task.spawn(function()
+			local t0 = os.clock()
+			while self.arrow == arrow do
+				local btn = b.button
+				local bob = 2.5 - 2.5 * math.cos(((os.clock() - t0) % 0.8) / 0.8 * 2 * math.pi)
+				local top = btn.AbsolutePosition.Y - btn.AbsoluteSize.Y * 0.3 -- scaled from the bottom
+				arrow.Position = UDim2.fromOffset(btn.AbsolutePosition.X + btn.AbsoluteSize.X / 2, top - 3 - bob)
+				task.wait()
+			end
+		end)
+	end
+	self:refresh()
+end
+
+-- Ghost ----------------------------------------------------------------------------------
 
 function BuildMenu:_buildGhost()
-	local ghost = Instance.new("Frame")
-	ghost.Name = "BuildGhost"
+	local ghost = Style.frame(self.deps.gui, "BuildGhost", C.gray800, 0.85)
 	ghost.AnchorPoint = Vector2.new(0.5, 0.5)
-	ghost.BackgroundTransparency = 0.35
-	ghost.BorderSizePixel = 0
 	ghost.ZIndex = 20
 	ghost.Visible = false
-	corner(ghost, 6)
-	local stroke = Instance.new("UIStroke")
-	stroke.Thickness = 2
-	stroke.Color = Color3.new(1, 1, 1)
-	stroke.Parent = ghost
-	local glyph = text(ghost, "Glyph", "", 18, FONT_BOLD)
-	glyph.Size = UDim2.fromScale(1, 1)
-	glyph.ZIndex = 21
-	local caption = text(ghost, "Caption", "", 13, FONT_BOLD)
+	Style.corner(ghost, 6)
+	self.ghostStroke = Style.stroke(ghost, C.white, 2)
+	local icon = Icons.label(ghost, "city", 20, { white = true })
+	icon.AnchorPoint = Vector2.new(0.5, 0.5)
+	icon.Position = UDim2.fromScale(0.5, 0.5)
+	icon.Size = UDim2.fromScale(0.75, 0.75)
+	icon.ZIndex = 21
+	local caption = Style.text(ghost, "Cost", "", 13, F.bold, C.yellow300)
 	caption.AnchorPoint = Vector2.new(0.5, 0)
 	caption.Position = UDim2.new(0.5, 0, 1, 4)
-	caption.AutomaticSize = Enum.AutomaticSize.XY
 	caption.ZIndex = 21
-	local cs = Instance.new("UIStroke")
-	cs.Thickness = 1.5
-	cs.Parent = caption
-	ghost.Parent = self.deps.gui
-	self.ghost, self.ghostGlyph, self.ghostCaption = ghost, glyph, caption
+	Style.textShadow(caption, 0.1)
+	-- Range circle (upstream rangeRadius), centred on the upgrade target when upgrading.
+	local range = Style.frame(self.deps.gui, "BuildRange")
+	range.AnchorPoint = Vector2.new(0.5, 0.5)
+	range.ZIndex = 19
+	range.Visible = false
+	local rc = Instance.new("UICorner")
+	rc.CornerRadius = UDim.new(0.5, 0)
+	rc.Parent = range
+	Style.stroke(range, C.white, 1.5, 0.3)
+	self.ghost, self.ghostIcon, self.ghostCaption, self.ghostRange = ghost, icon, caption, range
 end
 
+-- uiState.ghostStructure; picking the same unit again toggles x5 (setGhostStructure).
 function BuildMenu:select(unit: string?)
+	if unit ~= nil and unit == self.selected then
+		self.multiplier = if self.multiplier == 1 then 5 else 1
+		self:_updateGhost()
+		return
+	end
+	self.multiplier = 1
 	self.selected = unit
 	self.ghostTile, self.ghostInfo = nil, nil
 	self.ghost.Visible = false
+	self.ghostRange.Visible = false
 	if unit then
 		self:closeContextMenu()
-		self.ghostGlyph.Text = GLYPH[unit]
+		local item = ITEM_BY_UNIT[unit]
+		self.ghostIcon:Destroy()
+		local icon = Icons.label(self.ghost, item.icon, 20, { white = true })
+		icon.AnchorPoint = Vector2.new(0.5, 0.5)
+		icon.Position = UDim2.fromScale(0.5, 0.5)
+		icon.Size = UDim2.fromScale(0.75, 0.75)
+		icon.ZIndex = 21
+		self.ghostIcon = icon
 		self:hover(self.deps.mousePos())
 	end
 	self:refresh()
 end
 
--- Query what we can do at a tile; cb(result) runs on the caller's thread later.
+-- Query what we can do at a tile; cb(result) runs later.
 function BuildMenu:_query(tile: number, cb)
 	task.spawn(function()
 		local ok, result = pcall(function()
@@ -302,20 +398,51 @@ function BuildMenu:_infoFor(result, unit: string)
 	return nil
 end
 
+-- bulkCost: upgrading n levels at once costs the sum of the next n levels.
+local function bulkCost(info, multiplier: number): number
+	if info.upgradeCosts and multiplier > 1 then
+		return info.upgradeCosts[math.min(multiplier, #info.upgradeCosts)]
+	end
+	return info.cost
+end
+
 function BuildMenu:_updateGhost()
 	local info = self.ghostInfo
-	local color, caption = BAD_COLOR, ""
+	local color = BAD_COLOR
 	if info and info.canUpgrade then
-		color, caption = UPGRADE_COLOR, "Upgrade"
+		color = UPGRADE_COLOR
 	elseif info and info.canBuild then
-		color, caption = OK_COLOR, ""
+		color = OK_COLOR
 	end
+	self.ghostStroke.Color = color
+	self.ghost.BackgroundColor3 = self.deps.myColor() or C.gray800
 	if info then
-		caption = `{caption}{if caption ~= "" then " · " else ""}{Format.renderNumber(info.cost)}`
+		local mult = if info.canUpgrade then self.multiplier else 1
+		local cost = bulkCost(info, mult)
+		self.ghostCaption.Text = (if mult > 1 then `x{mult} ` else "") .. Format.renderNumber(cost)
+		self.ghostCaption.TextColor3 = if cost <= self.gold then C.yellow300 else BAD_COLOR
+	else
+		self.ghostCaption.Text = ""
 	end
-	self.ghost.BackgroundColor3 = color
-	self.ghostCaption.Text = caption
-	self.ghostCaption.TextColor3 = if info and info.cost <= self.gold then GOLD else BAD_COLOR
+	self:_placeRange()
+end
+
+function BuildMenu:_placeRange()
+	local radius = self.selected and RANGE[self.selected]
+	local tile = self.ghostTile
+	if self.ghostInfo and self.ghostInfo.upgradeTile then
+		tile = self.ghostInfo.upgradeTile
+	end
+	if not radius or not tile or not self.ghost.Visible then
+		self.ghostRange.Visible = false
+		return
+	end
+	local camera, map = self.deps.camera, self.deps.map
+	local p = camera:screenPos(map:x(tile), map:y(tile))
+	local d = radius * 2 * camera.zoom
+	self.ghostRange.Position = UDim2.fromOffset(p.X, p.Y)
+	self.ghostRange.Size = UDim2.fromOffset(d, d)
+	self.ghostRange.Visible = true
 end
 
 -- Mouse moved (screen position); only matters while a unit is selected.
@@ -326,15 +453,17 @@ function BuildMenu:hover(p: Vector2)
 	local tile = self.deps.tileAt(p)
 	self.ghost.Visible = tile ~= nil
 	if tile == nil then
+		self.ghostRange.Visible = false
 		return
 	end
-	local size = math.clamp(self.deps.camera.zoom * 3, 18, 34)
+	local size = math.clamp(self.deps.camera.zoom * 3, 22, 34)
 	self.ghost.Position = UDim2.fromOffset(p.X, p.Y)
 	self.ghost.Size = UDim2.fromOffset(size, size)
 	if tile ~= self.ghostTile then
 		self.ghostTile = tile
 		self:_scheduleQuery()
 	end
+	self:_placeRange()
 end
 
 function BuildMenu:_scheduleQuery()
@@ -365,72 +494,90 @@ function BuildMenu:_scheduleQuery()
 	end)
 end
 
--- Left click on the map; returns true when the build menu used it.
+-- Left click on the map; returns true when the build menu used it
+-- (BuildPreviewController.createStructure).
 function BuildMenu:click(tile: number): boolean
 	if self.contextMenu.Visible then
 		self:closeContextMenu()
 		return true
 	end
-	if not self.selected then
+	local unit = self.selected
+	if not unit then
 		return false
 	end
-	self.deps.net.Intent:FireServer({ type = "place", unit = self.selected, tile = tile })
-	self:select(nil)
+	local info = self.ghostInfo
+	if info == nil or self.ghostTile ~= tile then
+		-- Not resolved for this tile yet: let the server decide.
+		self.deps.net.Intent:FireServer({ type = "place", unit = unit, tile = tile, amount = self.multiplier })
+		self:select(nil)
+		return true
+	end
+	if info.canUpgrade then
+		self.deps.net.Intent:FireServer({ type = "place", unit = unit, tile = tile, amount = self.multiplier })
+		self:select(nil)
+	elseif info.canBuild then
+		self.deps.net.Intent:FireServer({ type = "place", unit = unit, tile = tile })
+		if unit ~= "Atom Bomb" and unit ~= "Hydrogen Bomb" then -- shouldPreserveGhostAfterBuild
+			self:select(nil)
+		end
+	else
+		self:select(nil)
+	end
 	return true
 end
 
--- Context menu -------------------------------------------------------------------------
+-- Context menu ----------------------------------------------------------------------------
 
 function BuildMenu:_buildContextMenu()
-	local menu = Instance.new("Frame")
-	menu.Name = "ContextMenu"
+	local menu = Style.frame(self.deps.gui, "ContextMenu", C.gray800, 0.92)
 	menu.AutomaticSize = Enum.AutomaticSize.Y
-	menu.Size = UDim2.fromOffset(210, 0)
-	menu.BackgroundColor3 = PANEL_COLOR
-	menu.BackgroundTransparency = 0.08
-	menu.BorderSizePixel = 0
+	menu.Size = UDim2.fromOffset(220, 0)
 	menu.Active = true
 	menu.Visible = false
 	menu.ZIndex = 30
-	corner(menu, 8)
-	local pad = Instance.new("UIPadding")
-	pad.PaddingLeft, pad.PaddingRight = UDim.new(0, 6), UDim.new(0, 6)
-	pad.PaddingTop, pad.PaddingBottom = UDim.new(0, 6), UDim.new(0, 6)
-	pad.Parent = menu
-	local layout = Instance.new("UIListLayout")
-	layout.Padding = UDim.new(0, 3)
-	layout.SortOrder = Enum.SortOrder.LayoutOrder
-	layout.Parent = menu
-	menu.Parent = self.deps.gui
+	Style.corner(menu, 8)
+	Style.padding(menu, 6)
+	Style.column(menu, 3)
 	self.contextMenu = menu
 end
 
 function BuildMenu:closeContextMenu()
 	self.contextMenu.Visible = false
 	for _, c in self.contextMenu:GetChildren() do
-		if c:IsA("TextButton") or c:IsA("TextLabel") then
+		if c:IsA("GuiObject") then
 			c:Destroy()
 		end
 	end
 	self.contextSeq = (self.contextSeq or 0) + 1
 end
 
-local function menuRow(menu: Frame, order: number, left: string, right: string, enabled: boolean, color: Color3?)
+local function menuRow(menu: Frame, order: number, iconName: string?, left: string, right: string, enabled: boolean, color: Color3?)
 	local b = Instance.new("TextButton")
 	b.LayoutOrder = order
 	b.Size = UDim2.new(1, 0, 0, 28)
-	b.BackgroundColor3 = Color3.fromRGB(45, 48, 58)
+	b.BackgroundColor3 = C.gray700
 	b.BackgroundTransparency = if enabled then 0 else 0.6
 	b.AutoButtonColor = enabled
+	b.BorderSizePixel = 0
 	b.Text = ""
 	b.ZIndex = 31
-	corner(b, 5)
-	local l = text(b, "Left", left, 14, FONT_BOLD, if enabled then (color or TEXT) else MUTED)
-	l.Size = UDim2.new(1, -12, 1, 0)
-	l.Position = UDim2.fromOffset(8, 0)
+	Style.corner(b, 5)
+	local x = 8
+	if iconName then
+		local icon = Icons.label(b, iconName, 16, { white = true })
+		icon.Position = UDim2.fromOffset(8, 6)
+		icon.ZIndex = 32
+		icon.ImageTransparency = if enabled then 0 else 0.6
+		x = 30
+	end
+	local l = Style.text(b, "Left", left, 14, F.bold, if enabled then (color or C.white) else C.gray500)
+	l.AutomaticSize = Enum.AutomaticSize.None
+	l.Size = UDim2.new(1, -x - 8, 1, 0)
+	l.Position = UDim2.fromOffset(x, 0)
 	l.TextXAlignment = Enum.TextXAlignment.Left
 	l.ZIndex = 32
-	local r = text(b, "Right", right, 13, FONT_BOLD, if enabled then GOLD else MUTED)
+	local r = Style.text(b, "Right", right, 13, F.bold, if enabled then C.yellow300 else C.gray500)
+	r.AutomaticSize = Enum.AutomaticSize.None
 	r.Size = UDim2.new(1, -8, 1, 0)
 	r.TextXAlignment = Enum.TextXAlignment.Right
 	r.ZIndex = 32
@@ -455,17 +602,13 @@ function BuildMenu:openContextMenu(p: Vector2, tile: number)
 		end
 		local menu = self.contextMenu
 		local order = 0
-		local title = text(menu, "Title", "Build", 13, FONT_BOLD, MUTED)
-		title.Size = UDim2.new(1, 0, 0, 18)
-		title.TextXAlignment = Enum.TextXAlignment.Left
-		title.ZIndex = 31
 		for _, item in ITEMS do
 			local info = self:_infoFor(result, item.unit)
 			if info then
 				order += 1
 				local enabled = info.canBuild or info.canUpgrade
 				local label = if info.canUpgrade then `Upgrade {item.unit}` else item.unit
-				local row = menuRow(menu, order, `{item.hotkey}  {label}`, Format.renderNumber(info.cost), enabled)
+				local row = menuRow(menu, order, item.icon, label, Format.renderNumber(info.cost), enabled)
 				if enabled then
 					row.Activated:Connect(function()
 						self.deps.net.Intent:FireServer({ type = "place", unit = item.unit, tile = tile })
@@ -476,21 +619,24 @@ function BuildMenu:openContextMenu(p: Vector2, tile: number)
 		end
 		if result.deleteUnit then
 			order += 1
-			local row = menuRow(menu, order, `Delete {result.deleteUnit}`, "", true, BAD_COLOR)
+			local row = menuRow(menu, order, nil, `Delete {result.deleteUnit}`, "", true, C.red500)
 			row.Activated:Connect(function()
 				self.deps.net.Intent:FireServer({ type = "delete_at", tile = tile })
 				self:closeContextMenu()
 			end)
 		end
+		if order == 0 then
+			return
+		end
 		-- Keep the menu on screen.
 		local screen = self.deps.gui.AbsoluteSize
-		local h = 30 + order * 31
-		menu.Position = UDim2.fromOffset(math.min(p.X + 8, screen.X - 220), math.clamp(p.Y - 10, 8, math.max(8, screen.Y - h - 8)))
+		local h = 12 + order * 31
+		menu.Position = UDim2.fromOffset(math.min(p.X + 8, screen.X - 228), math.clamp(p.Y - 10, 8, math.max(8, screen.Y - h - 8)))
 		menu.Visible = true
 	end)
 end
 
--- Keys ---------------------------------------------------------------------------------
+-- Keys ------------------------------------------------------------------------------------
 
 function BuildMenu:_bindKeys()
 	local byKey = {}
@@ -508,11 +654,9 @@ function BuildMenu:_bindKeys()
 			return
 		end
 		local unit = byKey[input.KeyCode]
-		if unit and self.deps.canAct() then
-			local cost = self.costs[unit]
-			if cost ~= nil and cost ~= false then
-				self:select(if self.selected == unit then nil else unit)
-			end
+		-- canUseBuildKeybinds: in game and alive; config-disabled units ignored.
+		if unit and self.deps.canAct() and not self.disabled[unit] then
+			self:select(unit)
 		end
 	end)
 end

@@ -1,27 +1,27 @@
 -- Units drawn over the map: transport and trade ships (interpolated between
 -- simulation ticks, a ship moves one tile per 100 ms tick) and structures
--- (owner-coloured badges with a glyph and their level).
--- TODO(port): warships, nukes, trains; upstream icon artwork.
+-- (owner-coloured badges with the upstream icon and their level).
+-- TODO(port): warships, nukes, trains.
 
 local Format = require(script.Parent.Format)
+local Icons = require(script.Parent.Icons)
 
 local TICK_SECONDS = 0.1
 local MIN_SIZE, MAX_SIZE = 7, 26 -- px, ships
 local MIN_STRUCT, MAX_STRUCT = 9, 30 -- px, structures
 
--- Structure glyphs (stand-ins for upstream's icon atlas).
-local STRUCTURE_GLYPH = {
-	City = "C",
-	Factory = "F",
-	Port = "P",
-	["Defense Post"] = "D",
-	["Missile Silo"] = "M",
-	["SAM Launcher"] = "S",
+-- Structure icons (tools/pack-icons.mjs).
+local STRUCTURE_ICON = {
+	City = "city",
+	Factory = "factory",
+	Port = "port",
+	["Defense Post"] = "defensePost",
+	["Missile Silo"] = "missileSilo",
+	["SAM Launcher"] = "samLauncher",
 }
 
 local UnitLayer = {}
 UnitLayer.__index = UnitLayer
-UnitLayer.STRUCTURE_GLYPH = STRUCTURE_GLYPH
 
 function UnitLayer.new(parent: GuiObject, camera, gameMap)
 	local container = Instance.new("Frame")
@@ -85,7 +85,7 @@ local function makeShip(parent: Instance, id: number, withTroops: boolean)
 	return frame, label
 end
 
-local function makeStructure(parent: Instance, id: number, glyph: string)
+local function makeStructure(parent: Instance, id: number, icon: string)
 	local frame = Instance.new("Frame")
 	frame.Name = `Structure{id}`
 	frame.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -95,9 +95,10 @@ local function makeStructure(parent: Instance, id: number, glyph: string)
 	corner.CornerRadius = UDim.new(0.25, 0)
 	corner.Parent = frame
 	local stroke = stroked(frame, 1.5, Color3.new(1, 1, 1))
-	local g = textLabel(frame, "Glyph")
-	g.Size = UDim2.fromScale(1, 1)
-	g.Text = glyph
+	local g = Icons.label(frame, icon, 16, { white = true })
+	g.AnchorPoint = Vector2.new(0.5, 0.5)
+	g.Position = UDim2.fromScale(0.5, 0.5)
+	g.Size = UDim2.fromScale(0.78, 0.78)
 	g.ZIndex = 6
 	local level = textLabel(frame, "Level")
 	level.AnchorPoint = Vector2.new(0, 1)
@@ -123,9 +124,9 @@ function UnitLayer:apply(u)
 		end
 		return
 	end
-	local glyph = STRUCTURE_GLYPH[u.unitType]
-	if glyph then
-		self:_applyStructure(e, u, glyph)
+	local icon = STRUCTURE_ICON[u.unitType]
+	if icon then
+		self:_applyStructure(e, u, icon)
 		return
 	end
 	if u.unitType ~= "Transport" and u.unitType ~= "Trade Ship" then
@@ -134,13 +135,14 @@ function UnitLayer:apply(u)
 	local now = os.clock()
 	if e == nil then
 		local frame, label = makeShip(self.container, u.id, u.unitType == "Transport")
-		e = { frame = frame, label = label, from = u.pos, to = u.pos, t0 = now, small = u.unitType == "Trade Ship" }
+		e = { frame = frame, label = label, from = u.pos, to = u.pos, t0 = now, small = u.unitType == "Trade Ship", unitType = u.unitType }
 		self.units[u.id] = e
 	elseif e.to ~= u.pos then
 		e.from = e.to
 		e.to = u.pos
 		e.t0 = now
 	end
+	e.ownerID = u.ownerID
 	local color = self.colors[u.ownerID] or Color3.new(1, 1, 1)
 	e.frame.BackgroundColor3 = if u.isRetreating then color:Lerp(Color3.new(0.5, 0.5, 0.5), 0.6) else color
 	if e.label then
@@ -148,9 +150,9 @@ function UnitLayer:apply(u)
 	end
 end
 
-function UnitLayer:_applyStructure(e, u, glyph: string)
+function UnitLayer:_applyStructure(e, u, icon: string)
 	if e == nil then
-		local frame, g, level, stroke = makeStructure(self.container, u.id, glyph)
+		local frame, g, level, stroke = makeStructure(self.container, u.id, icon)
 		e = { frame = frame, glyph = g, levelLabel = level, stroke = stroke, isStructure = true, pos = u.pos }
 		self.units[u.id] = e
 	end
@@ -165,12 +167,22 @@ function UnitLayer:_applyStructure(e, u, glyph: string)
 	-- Marked for deletion (removed when the 30 s mark expires): red outline.
 	e.stroke.Color = if u.markedForDeletion then Color3.fromRGB(230, 70, 70) else Color3.new(1, 1, 1)
 	e.stroke.Thickness = if u.markedForDeletion then 2.5 else 1.5
-	e.glyph.TextTransparency = if building then 0.4 else 0
+	e.glyph.ImageTransparency = if building then 0.4 else 0
 	e.levelLabel.Text = if e.level > 1 then tostring(e.level) else ""
 	self:_place(e)
 	if self.onChanged then
 		self.onChanged()
 	end
+end
+
+-- Whether a player has any active unit of a type (ships included).
+function UnitLayer:hasUnit(ownerID: number, unitType: string): boolean
+	for _, e in self.units do
+		if e.ownerID == ownerID and e.unitType == unitType then
+			return true
+		end
+	end
+	return false
 end
 
 -- Sum of levels of a player's structures of one type (upstream totalUnitLevels).
@@ -187,10 +199,9 @@ end
 function UnitLayer:_place(e)
 	local camera, map = self.camera, self.map
 	local size = math.clamp(camera.zoom * 3, MIN_STRUCT, MAX_STRUCT)
-	local p = camera:screenPos(map:x(e.pos) + 0.5, map:y(e.pos) + 0.5)
+	local p = camera:screenPos(map:x(e.pos), map:y(e.pos))
 	e.frame.Position = UDim2.fromOffset(p.X, p.Y)
 	e.frame.Size = UDim2.fromOffset(size, size)
-	e.glyph.TextSize = size * 0.62
 	e.levelLabel.TextSize = math.max(9, size * 0.5)
 end
 
@@ -207,7 +218,7 @@ function UnitLayer:render()
 		local a = math.clamp((now - e.t0) / TICK_SECONDS, 0, 1)
 		local fx, fy = map:x(e.from), map:y(e.from)
 		local tx, ty = map:x(e.to), map:y(e.to)
-		local p = camera:screenPos(fx + (tx - fx) * a + 0.5, fy + (ty - fy) * a + 0.5)
+		local p = camera:screenPos(fx + (tx - fx) * a, fy + (ty - fy) * a)
 		local s = if e.small then size * 0.6 else size
 		e.frame.Position = UDim2.fromOffset(p.X, p.Y)
 		e.frame.Size = UDim2.fromOffset(s, s)

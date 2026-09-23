@@ -32,6 +32,7 @@ function MapCamera.new(background: Frame, W: number, H: number)
 		_connections = {},
 		onClick = nil :: ((Vector2) -> ())?,
 		onRightClick = nil :: ((Vector2) -> ())?,
+		onShiftScroll = nil :: ((number) -> ())?,
 		onHover = nil :: ((Vector2) -> ())?,
 		onChanged = nil :: (() -> ())?,
 	}, MapCamera)
@@ -87,6 +88,15 @@ function MapCamera:zoomAt(anchor: Vector2, newZoom: number)
 	self.panX = anchor.X - (anchor.X - self.panX) * k
 	self.panY = anchor.Y - (anchor.Y - self.panY) * k
 	self.zoom = newZoom
+	self:apply()
+end
+
+-- Centre the view on map tile (x, y), zooming in to at least minZoom.
+function MapCamera:centerOn(x: number, y: number, minZoom: number?)
+	local size = self.background.AbsoluteSize
+	self.zoom = math.clamp(math.max(self.zoom, minZoom or 0), self.minZoom, MAX_ZOOM)
+	self.panX = size.X / 2 - (x + 0.5) * self.zoom
+	self.panY = size.Y / 2 - (y + 0.5) * self.zoom
 	self:apply()
 end
 
@@ -165,6 +175,13 @@ function MapCamera:_bindInput()
 				self.onHover(p)
 			end
 		elseif input.UserInputType == Enum.UserInputType.MouseWheel and not processed then
+			-- Shift + wheel changes the attack ratio instead (upstream onShiftScroll).
+			if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
+				if self.onShiftScroll then
+					self.onShiftScroll(input.Position.Z)
+				end
+				return
+			end
 			local factor = if input.Position.Z > 0 then ZOOM_STEP else 1 / ZOOM_STEP
 			self:zoomAt(mousePos(), self.zoom * factor)
 			if self.onHover then

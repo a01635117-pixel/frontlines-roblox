@@ -7,18 +7,19 @@ local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local ColorAllocator = require(Shared:WaitForChild("ColorAllocator"))
-local DetMath = require(Shared:WaitForChild("DetMath"))
 local GameMap = require(Shared:WaitForChild("GameMap"))
 local MapLoader = require(Shared:WaitForChild("MapLoader"))
 local Net = require(Shared:WaitForChild("Net"))
 local TerrainColors = require(Shared:WaitForChild("TerrainColors"))
 
 local BuildMenu = require(script.Parent:WaitForChild("BuildMenu"))
+local ControlPanel = require(script.Parent:WaitForChild("ControlPanel"))
 local Format = require(script.Parent:WaitForChild("Format"))
 local Hud = require(script.Parent:WaitForChild("Hud"))
 local MapCamera = require(script.Parent:WaitForChild("MapCamera"))
 local NameLayer = require(script.Parent:WaitForChild("NameLayer"))
 local TerritoryRenderer = require(script.Parent:WaitForChild("TerritoryRenderer"))
+local TutorialPanel = require(script.Parent:WaitForChild("TutorialPanel"))
 local UnitLayer = require(script.Parent:WaitForChild("UnitLayer"))
 
 local player = Players.LocalPlayer
@@ -44,6 +45,7 @@ background.Parent = gui
 
 local hud = Hud.new(gui)
 hud:setCountdown("…", "Waiting for the match to start")
+local controlPanel = ControlPanel.new(gui)
 gui.Parent = player:WaitForChild("PlayerGui")
 
 -- Match state --------------------------------------------------------------------
@@ -99,11 +101,6 @@ local function estimatedTick(): number
 	return tickBase + math.floor((os.clock() - tickClock) * 10)
 end
 
--- Upstream Config.maxTroops for a human (no cities yet).
-local function maxTroopsForHuman(tiles: number): number
-	return 2 * (DetMath.pow(tiles, 0.6) * 1000 + 50000)
-end
-
 local terrainNames = {}
 for name, value in GameMap.TerrainType do
 	terrainNames[value] = name
@@ -121,8 +118,12 @@ local function myStats()
 	return mySmallID and stats[mySmallID]
 end
 
+local myInfo = { disabled = state.disabledUnits or {} } -- latest Net.Me payload
+local myBordering = nil -- set of smallIDs we share a border with
+
 local buildMenu = BuildMenu.new({
 	gui = gui,
+	hotbarParent = controlPanel.hotbarParent,
 	camera = camera,
 	map = gameMap,
 	net = Net,
@@ -134,6 +135,9 @@ local buildMenu = BuildMenu.new({
 	mySmallID = function()
 		return mySmallID
 	end,
+	myColor = function()
+		return mySmallID and unitLayer.colors[mySmallID]
+	end,
 	-- Upstream hides the build bar during the spawn phase and once we are dead.
 	canAct = function()
 		local mine = myStats()
@@ -144,12 +148,131 @@ unitLayer.onChanged = function()
 	buildMenu:refresh()
 end
 
+local UserInputService = game:GetService("UserInputService")
+
+-- TutorialPanel.buildContext
+local function tutorialContext()
+	if mySmallID == nil then
+		return nil
+	end
+	local mine = myStats()
+	local disabled = myInfo.disabled or {}
+	local costs = myInfo.costs or {}
+	local botsExist, nationsExist = false, false
+	for smallID, e in roster do
+		local s = stats[smallID]
+		if s and s.tiles > 0 then
+			botsExist = botsExist or e.type == "BOT"
+			nationsExist = nationsExist or e.type == "NATION"
+		end
+	end
+	local function has(unitType)
+		return unitLayer:totalLevels(mySmallID, unitType)
+	end
+	return {
+		dead = haveSpawned and not inSpawnPhase and (mine == nil or mine.tiles == 0),
+		hasSpawned = haveSpawned,
+		inSpawnPhase = inSpawnPhase,
+		attacking = myInfo.attacking == true,
+		boatsDisabled = false,
+		boatAfloat = unitLayer:hasUnit(mySmallID, "Transport"),
+		botsExist = botsExist,
+		nationsExist = nationsExist,
+		alliancesDisabled = true, -- TODO(port): alliances
+		allied = myInfo.allied == true,
+		gold = if mine then mine.gold else 0,
+		costs = costs,
+		cityCost = costs.City,
+		cityDisabled = disabled.City == true,
+		cities = has("City"),
+		portDisabled = disabled.Port == true,
+		ports = has("Port"),
+		defensePostDisabled = disabled["Defense Post"] == true,
+		defensePosts = has("Defense Post"),
+		factoryDisabled = disabled.Factory == true,
+		factories = has("Factory"),
+		warshipDisabled = disabled.Warship == true,
+		warships = if unitLayer:hasUnit(mySmallID, "Warship") then 1 else 0,
+		siloDisabled = disabled["Missile Silo"] == true,
+		silos = has("Missile Silo"),
+		atomDisabled = disabled["Atom Bomb"] == true,
+		siloReady = false, -- TODO(port): silo cooldowns with nukes
+		atomInFlight = unitLayer:hasUnit(mySmallID, "Atom Bomb"),
+		hydrogenDisabled = disabled["Hydrogen Bomb"] == true,
+		mirvDisabled = disabled.MIRV == true,
+		samDisabled = disabled["SAM Launcher"] == true,
+	}
+end
+
+local tutorial = TutorialPanel.new({
+	slot = controlPanel.tutorialSlot,
+	mapLayer = background,
+	camera = camera,
+	net = Net,
+	dismissed = state.tutorialDismissed == true,
+	context = tutorialContext,
+	isTouch = function()
+		return UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	end,
+	namePlacement = function(smallID)
+		return nameLayer:placement(smallID)
+	end,
+	mySmallID = function()
+		return mySmallID
+	end,
+	players = function()
+		local list = {}
+		for smallID, e in roster do
+			local s = stats[smallID]
+			table.insert(list, { smallID = smallID, type = e.type, alive = s ~= nil and s.tiles > 0 })
+		end
+		return list
+	end,
+	bordering = function()
+		return myBordering
+	end,
+	hasCoast = function()
+		return myInfo.hasCoast
+	end,
+	isFriendly = function(_smallID)
+		return false -- TODO(port): alliances / teams
+	end,
+	setHighlight = function(target)
+		controlPanel:setHighlight(target)
+		buildMenu:setHighlight(target)
+	end,
+})
+tutorial:setAttackRatio(controlPanel.ratio)
+controlPanel.onRatioChanged = function(ratio)
+	tutorial:setAttackRatio(ratio)
+end
+camera.onShiftScroll = function(z)
+	controlPanel:shiftScroll(z)
+end
+
+local function refreshPanelVisibility()
+	local mine = myStats()
+	controlPanel:setVisible(not inSpawnPhase and mine ~= nil and mine.tiles > 0)
+end
+
 -- Server events ------------------------------------------------------------------
 
 Net.Roster.OnClientEvent:Connect(addPlayers)
 
-Net.BuildInfo.OnClientEvent:Connect(function(costs)
-	buildMenu:setCosts(costs)
+Net.Me.OnClientEvent:Connect(function(info)
+	-- bordering / hasCoast only arrive every few updates; keep the last ones.
+	if info.bordering then
+		local set = {}
+		for _, id in info.bordering do
+			set[id] = true
+		end
+		myBordering = set
+	else
+		info.hasCoast = myInfo.hasCoast
+	end
+	myInfo = info
+	controlPanel:setInfo(info)
+	buildMenu:setInfo(info)
 end)
 
 Net.Names.OnClientEvent:Connect(function(buf)
@@ -210,7 +333,7 @@ Net.Stats.OnClientEvent:Connect(function(buf)
 	end)
 	local mine = mySmallID and stats[mySmallID]
 	if mine then
-		hud:setMyStats(mine.troops, maxTroopsForHuman(mine.tiles), mine.gold)
+		controlPanel:setStats(mine.troops, mine.gold)
 		buildMenu:setGold(mine.gold)
 		if mine.tiles > 0 then
 			haveSpawned = true
@@ -220,6 +343,7 @@ Net.Stats.OnClientEvent:Connect(function(buf)
 			hud:showModal("You died", "Spectate")
 		end
 	end
+	refreshPanelVisibility()
 	refreshBoard()
 end)
 
@@ -227,6 +351,9 @@ Net.Event.OnClientEvent:Connect(function(evt)
 	if evt.type == "SpawnPhaseEnd" then
 		inSpawnPhase = false
 		buildMenu:refresh()
+		refreshPanelVisibility()
+	elseif evt.type == "GoldGain" then
+		controlPanel:goldGain(evt.gold)
 	elseif evt.type == "Win" then
 		gameOver = true
 		if evt.winnerSmallID ~= nil and evt.winnerSmallID == mySmallID then
@@ -257,7 +384,7 @@ camera.onClick = function(p: Vector2)
 		return
 	end
 	-- The server decides land attack vs boat, exactly like the upstream client.
-	Net.Intent:FireServer({ type = "click", tile = tile, ratio = hud.ratio })
+	Net.Intent:FireServer({ type = "click", tile = tile, ratio = controlPanel.ratio })
 end
 
 camera.onRightClick = function(p: Vector2)
@@ -291,6 +418,7 @@ end
 RunService.RenderStepped:Connect(function()
 	renderer:flush()
 	unitLayer:render()
+	tutorial:renderOverlays()
 	if inSpawnPhase and not gameOver then
 		local left = math.max(1, math.ceil((spawnPhaseTurns - estimatedTick()) / 10))
 		local mine = mySmallID and stats[mySmallID]

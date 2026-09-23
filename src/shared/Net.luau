@@ -9,8 +9,10 @@
 --   Names(buf)         name placements (NameBoxCalculator), when recomputed
 --   Units(list)        unit changes this tick: { id, unitType, ownerID, pos, troops, isActive, isRetreating,
 --                      level, underConstruction, markedForDeletion }
---   BuildInfo(costs)   your build menu prices: { [unitType] = gold | false (disabled) }
---   Event(evt)         game events: spawn phase end, winner, messages
+--   Me(info)           private: { costs = { [unitType] = gold }, disabled = { [unitType] = true }, maxTroops,
+--                      troopRate (per s),
+--                      attackingTroops, attacking, allied, bordering? = { smallID }, hasCoast? }
+--   Event(evt)         game events: spawn phase end, winner, conquest, GoldGain (private)
 -- Client -> server
 --   Intent(intent)     { type = "spawn", tile } | { type = "click", tile, ratio }
 --                      | { type = "attack", targetSmallID, ratio } | { type = "cancel_boat", unitID }
@@ -24,7 +26,7 @@ local EncodingService = game:GetService("EncodingService")
 
 local Net = {}
 
-local NAMES = { "GameState", "Roster", "Tick", "Stats", "Names", "Units", "BuildInfo", "Event", "Intent" }
+local NAMES = { "GameState", "Roster", "Tick", "Stats", "Names", "Units", "Me", "Event", "Intent" }
 
 local FUNCTIONS = { "Query" }
 

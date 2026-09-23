@@ -26,8 +26,44 @@ local TICK_SECONDS = 0.1 -- Config.msPerTick() = 100
 local STATS_EVERY = 5 -- ticks between stats broadcasts
 local MAX_INTENTS_PER_TICK = 10 -- per player
 
+-- Unit types the build menu may place (upstream BuildMenus order).
+local BUILDABLE = { "City", "Factory", "Port", "Defense Post", "Missile Silo", "SAM Launcher", "Warship", "Atom Bomb", "Hydrogen Bomb", "MIRV" }
+
 local function clientIDOf(player: Player): string
 	return tostring(player.UserId)
+end
+
+-- Per-user settings (upstream keeps them in localStorage). Only the tutorial
+-- "Don't show again" flag so far. DataStores fail in Studio without API
+-- access; everything here is best effort.
+local settingsStore = nil
+pcall(function()
+	settingsStore = game:GetService("DataStoreService"):GetDataStore("UserSettings")
+end)
+local userSettings = {} -- UserId -> settings table
+
+local function loadSettings(player: Player)
+	if userSettings[player.UserId] then
+		return userSettings[player.UserId]
+	end
+	local data = nil
+	if settingsStore then
+		pcall(function()
+			data = settingsStore:GetAsync(tostring(player.UserId))
+		end)
+	end
+	userSettings[player.UserId] = if type(data) == "table" then data else {}
+	return userSettings[player.UserId]
+end
+
+local function saveSetting(player: Player, key: string, value: any)
+	local settings = loadSettings(player)
+	settings[key] = value
+	if settingsStore then
+		task.spawn(pcall, function()
+			settingsStore:SetAsync(tostring(player.UserId), settings)
+		end)
+	end
 end
 
 -- Lobby ---------------------------------------------------------------------------
@@ -148,6 +184,14 @@ local function fullState(forPlayer: Player)
 		-- Singleplayer has no spawn timer (upstream GameRunner.init).
 		hasSpawnTimer = mg:config():gameConfig().gameType ~= "Singleplayer",
 		yourClientID = clientIDOf(forPlayer),
+		tutorialDismissed = loadSettings(forPlayer).tutorialDismissed == true,
+		disabledUnits = (function()
+			local d = {}
+			for _, u in BUILDABLE do
+				d[u] = mg:config():isUnitDisabled(u) or nil
+			end
+			return d
+		end)(),
 		players = roster,
 		tiles = Net.wrap(copy),
 		names = Net.packNames(nameRows()),
@@ -195,9 +239,6 @@ if RunService:IsStudio() then
 	_G.OpenFront = { game = mg, runner = runner }
 end
 
--- Unit types the build menu may place (upstream BuildMenus order).
-local BUILDABLE = { "City", "Factory", "Port", "Defense Post", "Missile Silo", "SAM Launcher", "Warship", "Atom Bomb", "Hydrogen Bomb", "MIRV" }
-
 local function isInt(v): boolean
 	return type(v) == "number" and v == math.floor(v)
 end
@@ -243,7 +284,19 @@ Net.Query.OnServerInvoke = function(player: Player, q)
 	end
 	local out = {}
 	for _, bu in me:buildableUnits(q.tile, list) do
-		table.insert(out, { unit = bu.type, cost = bu.cost, canBuild = bu.canBuild ~= false, canUpgrade = bu.canUpgrade ~= false })
+		local upgradeTile = nil
+		if bu.canUpgrade ~= false then
+			local target = mg:unit(bu.canUpgrade)
+			upgradeTile = target and target:tile()
+		end
+		table.insert(out, {
+			unit = bu.type,
+			cost = bu.cost,
+			canBuild = bu.canBuild ~= false,
+			canUpgrade = bu.canUpgrade ~= false,
+			upgradeCosts = if bu.upgradeCosts then table.move(bu.upgradeCosts, 1, 5, 1, {}) else nil, -- x1 and x5 only
+			upgradeTile = upgradeTile,
+		})
 	end
 	local del = deletableAt(me, q.tile)
 	return { units = out, deleteUnit = if del then del:type() else nil }
@@ -254,6 +307,10 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 		return
 	end
 	local clientID = clientIDOf(player)
+	if intent.type == "tutorial_dismiss" then
+		saveSetting(player, "tutorialDismissed", true)
+		return
+	end
 	local me = mg:playerByClientID(clientID)
 	if me == nil then
 		return -- spectator
@@ -320,7 +377,8 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 		end
 		local bu = me:buildableUnits(tile, { unitType })[1]
 		if bu.canUpgrade ~= false then
-			table.insert(pending, { type = "upgrade_structure", clientID = clientID, unitId = bu.canUpgrade, amount = 1 })
+			local amount = if intent.amount == 5 then 5 else 1 -- uiState.upgradeMultiplier
+			table.insert(pending, { type = "upgrade_structure", clientID = clientID, unitId = bu.canUpgrade, amount = amount })
 		elseif bu.canBuild ~= false then
 			table.insert(pending, { type = "build_unit", clientID = clientID, unit = unitType, tile = tile })
 		end
@@ -339,6 +397,70 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 end)
 
 -- Tick loop -----------------------------------------------------------------------
+
+-- Control panel / hotbar / tutorial data for one human (upstream reads these
+-- from its local game view): prices, max troops, troop growth per second,
+-- troops out in attacks, and every BORDER_EVERY ticks who we border and
+-- whether we own coast (TutorialPanel.refreshBordering).
+local BORDER_EVERY = 10
+local function meInfo(me, withBorders: boolean)
+	local config = mg:config()
+	local costs, disabled = {}, {}
+	for _, u in BUILDABLE do
+		costs[u] = config:unitInfo(u).cost(mg, me)
+		disabled[u] = config:isUnitDisabled(u) or nil
+	end
+	local attackingTroops, attacking = 0, false
+	for _, a in me:outgoingAttacks() do
+		attackingTroops += a:troops()
+		attacking = true
+	end
+	local info = {
+		costs = costs,
+		disabled = disabled,
+		maxTroops = config:maxTroops(me),
+		troopRate = config:troopIncreaseRate(me) * 10,
+		attackingTroops = attackingTroops,
+		attacking = attacking,
+		allied = #me:alliances() > 0,
+	}
+	if withBorders then
+		local myID = me:smallID()
+		local seen, bordering, coast = {}, {}, false
+		for t in me:borderTiles() do
+			if mg:isShore(t) then
+				coast = true
+			end
+			for _, n in mg:neighbors(t) do
+				local owner = mg:ownerID(n)
+				if owner ~= 0 and owner ~= myID and not seen[owner] then
+					seen[owner] = true
+					table.insert(bordering, owner)
+				end
+			end
+		end
+		info.bordering = bordering
+		info.hasCoast = coast
+	end
+	return info
+end
+
+-- Gold pop next to the gold counter (upstream ControlPanel.addGoldGain).
+local function sendGoldGain(playerID, gold: number)
+	if gold <= 0 then
+		return
+	end
+	local p = mg:player(playerID)
+	local clientID = p and p:clientID()
+	if clientID == nil then
+		return
+	end
+	for _, plr in Players:GetPlayers() do
+		if clientIDOf(plr) == clientID then
+			Net.Event:FireClient(plr, { type = "GoldGain", gold = gold })
+		end
+	end
+end
 
 -- Latest state per unit this tick, sent as one Units message.
 local unitChanges, unitOrder = {}, {}
@@ -375,6 +497,9 @@ local function handleUpdates(updates)
 			})
 		elseif u.type == "ConquestEvent" then
 			Net.Event:FireAllClients({ type = "Conquest", conquerorId = u.conquerorId, conqueredId = u.conqueredId })
+			sendGoldGain(u.conquerorId, u.gold or 0)
+		elseif u.type == "BonusEvent" then
+			sendGoldGain(u.player, u.gold or 0)
 		end
 	end
 	if #unitOrder > 0 then
@@ -387,6 +512,7 @@ local function handleUpdates(updates)
 end
 
 local lastTile, order, states = {}, {}, {}
+
 
 local function runTick()
 	-- Resolve attack troops against current troop counts.
@@ -434,11 +560,7 @@ local function runTick()
 		for _, plr in Players:GetPlayers() do
 			local me = mg:playerByClientID(clientIDOf(plr))
 			if me and me:isAlive() then
-				local costs = {}
-				for _, u in BUILDABLE do
-					costs[u] = if mg:config():isUnitDisabled(u) then false else mg:config():unitInfo(u).cost(mg, me)
-				end
-				Net.BuildInfo:FireClient(plr, costs)
+				Net.Me:FireClient(plr, meInfo(me, tick % BORDER_EVERY == 0))
 			end
 		end
 	end

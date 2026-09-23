@@ -72,6 +72,15 @@ function NameLayer:setPlacement(smallID: number, x: number, y: number, size: num
 	end
 end
 
+-- Upstream nameLocation(): map x, y and font size; nil until placed.
+function NameLayer:placement(smallID: number): (number?, number?, number?)
+	local e = self.entries[smallID]
+	if e == nil or (e.x == 0 and e.y == 0 and e.size == 0) then
+		return nil, nil, nil
+	end
+	return e.x, e.y, e.size
+end
+
 function NameLayer:setTroops(smallID: number, troops: number, alive: boolean)
 	local e = self.entries[smallID]
 	if e then

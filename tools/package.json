@@ -1,0 +1,9 @@
+{
+  "name": "openfront-roblox-tools",
+  "private": true,
+  "type": "module",
+  "description": "Offline packing tools (maps, colours, icons) for the Roblox port.",
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2"
+  }
+}

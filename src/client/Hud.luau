@@ -1,9 +1,7 @@
--- In-game HUD: spawn countdown, control panel (troops, gold, attack ratio
--- slider), leaderboard, hover info and the winner banner.
--- Layout follows OpenFront's ControlPanel / leaderboard; visuals are native.
+-- In-game HUD: spawn countdown, leaderboard, hover info and the winner banner.
+-- The control panel lives in ControlPanel.luau.
 
 local GuiService = game:GetService("GuiService")
-local UserInputService = game:GetService("UserInputService")
 
 local Format = require(script.Parent.Format)
 
@@ -59,7 +57,7 @@ local function label(parent: Instance, name: string, text: string, size: number,
 end
 
 function Hud.new(gui: ScreenGui)
-	local self = setmetatable({ gui = gui, ratio = 0.2, onRatioChanged = nil }, Hud)
+	local self = setmetatable({ gui = gui }, Hud)
 
 	-- Spawn countdown: big digits in the middle of the screen. The top bar
 	-- belongs to Roblox (logo / menu top left), so nothing goes up there.
@@ -91,88 +89,6 @@ function Hud.new(gui: ScreenGui)
 	-- Panels at the top sit below Roblox's top bar.
 	local topInset = GuiService:GetGuiInset().Y + 8
 
-	-- Control panel, bottom left.
-	local control = panel(gui, "ControlPanel")
-	control.AnchorPoint = Vector2.new(0, 1)
-	control.Position = UDim2.new(0, 12, 1, -12)
-	control.Size = UDim2.fromOffset(300, 118)
-	padding(control, 12)
-	local troops = label(control, "Troops", "Troops: 0 / 0", 16, FONT_BOLD)
-	troops.Size = UDim2.new(1, 0, 0, 20)
-	local troopBar = Instance.new("Frame")
-	troopBar.Name = "TroopBar"
-	troopBar.Position = UDim2.fromOffset(0, 24)
-	troopBar.Size = UDim2.new(1, 0, 0, 6)
-	troopBar.BackgroundColor3 = Color3.fromRGB(55, 58, 66)
-	troopBar.BorderSizePixel = 0
-	corner(troopBar, 3)
-	troopBar.Parent = control
-	local troopFill = Instance.new("Frame")
-	troopFill.Name = "Fill"
-	troopFill.Size = UDim2.fromScale(0, 1)
-	troopFill.BackgroundColor3 = Color3.fromRGB(90, 200, 120)
-	troopFill.BorderSizePixel = 0
-	corner(troopFill, 3)
-	troopFill.Parent = troopBar
-	local gold = label(control, "Gold", "Gold: 0", 16, FONT_BOLD, Color3.fromRGB(255, 214, 90))
-	gold.Position = UDim2.fromOffset(0, 36)
-	gold.Size = UDim2.new(1, 0, 0, 20)
-	local ratioLabel = label(control, "RatioLabel", "Attack ratio: 20%", 14, FONT, MUTED)
-	ratioLabel.Position = UDim2.fromOffset(0, 62)
-	ratioLabel.Size = UDim2.new(1, 0, 0, 18)
-	self.troopsText, self.troopFill, self.goldText, self.ratioText = troops, troopFill, gold, ratioLabel
-
-	-- Attack ratio slider.
-	local track = Instance.new("Frame")
-	track.Name = "RatioSlider"
-	track.Position = UDim2.fromOffset(0, 84)
-	track.Size = UDim2.new(1, 0, 0, 10)
-	track.BackgroundColor3 = Color3.fromRGB(55, 58, 66)
-	track.BorderSizePixel = 0
-	track.Active = true
-	corner(track, 5)
-	track.Parent = control
-	local fill = Instance.new("Frame")
-	fill.Name = "Fill"
-	fill.BackgroundColor3 = ACCENT
-	fill.BorderSizePixel = 0
-	corner(fill, 5)
-	fill.Parent = track
-	local knob = Instance.new("Frame")
-	knob.Name = "Knob"
-	knob.AnchorPoint = Vector2.new(0.5, 0.5)
-	knob.Size = UDim2.fromOffset(16, 16)
-	knob.BackgroundColor3 = Color3.new(1, 1, 1)
-	knob.BorderSizePixel = 0
-	corner(knob, 8)
-	knob.Parent = track
-	self.ratioFill, self.ratioKnob = fill, knob
-
-	local dragging = false
-	local function setFromX(x: number)
-		local rel = math.clamp((x - track.AbsolutePosition.X) / math.max(1, track.AbsoluteSize.X), 0.01, 1)
-		self:setRatio(math.floor(rel * 100 + 0.5) / 100)
-		if self.onRatioChanged then
-			self.onRatioChanged(self.ratio)
-		end
-	end
-	track.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = true
-			setFromX(input.Position.X)
-		end
-	end)
-	UserInputService.InputChanged:Connect(function(input)
-		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-			setFromX(input.Position.X)
-		end
-	end)
-	UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = false
-		end
-	end)
-	self:setRatio(0.2)
 
 	-- Leaderboard, top right.
 	local board = panel(gui, "Leaderboard")
@@ -211,10 +127,10 @@ function Hud.new(gui: ScreenGui)
 		self.boardRows[i] = { frame = row, name = name, pct = pct, troops = tr }
 	end
 
-	-- Hover info, above the control panel.
+	-- Hover info, bottom left.
 	local hover = panel(gui, "Hover")
 	hover.AnchorPoint = Vector2.new(0, 1)
-	hover.Position = UDim2.new(0, 12, 1, -140)
+	hover.Position = UDim2.new(0, 12, 1, -12)
 	hover.AutomaticSize = Enum.AutomaticSize.XY
 	hover.Active = false
 	padding(hover, 6)
@@ -271,19 +187,6 @@ function Hud:setCountdown(seconds: (number | string)?, subtitle: string?)
 		self.countdownDigits.Text = tostring(seconds)
 		self.countdownSubtitle.Text = subtitle or ""
 	end
-end
-
-function Hud:setRatio(ratio: number)
-	self.ratio = ratio
-	self.ratioText.Text = `Attack ratio: {math.floor(ratio * 100 + 0.5)}%`
-	self.ratioFill.Size = UDim2.fromScale(ratio, 1)
-	self.ratioKnob.Position = UDim2.fromScale(ratio, 0.5)
-end
-
-function Hud:setMyStats(troops: number, maxTroops: number, gold: number)
-	self.troopsText.Text = `Troops: {Format.renderTroops(troops)} / {Format.renderTroops(maxTroops)}`
-	self.troopFill.Size = UDim2.fromScale(math.clamp(troops / math.max(1, maxTroops), 0, 1), 1)
-	self.goldText.Text = `Gold: {Format.renderNumber(gold)}`
 end
 
 -- rows: { { name, pct (0-1), troops, isMe } }
