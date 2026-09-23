@@ -404,6 +404,9 @@ end)
 -- troops out in attacks, and every BORDER_EVERY ticks who we border and
 -- whether we own coast (TutorialPanel.refreshBordering).
 local BORDER_EVERY = 10
+-- Humans that had an outgoing attack on any tick since their last Me message
+-- (upstream's tutorial samples every tick; short attacks must not be missed).
+local sawAttack = {}
 local function meInfo(me, withBorders: boolean)
 	local config = mg:config()
 	local costs, disabled = {}, {}
@@ -411,7 +414,8 @@ local function meInfo(me, withBorders: boolean)
 		costs[u] = config:unitInfo(u).cost(mg, me)
 		disabled[u] = config:isUnitDisabled(u) or nil
 	end
-	local attackingTroops, attacking = 0, false
+	local attackingTroops, attacking = 0, sawAttack[me] == true
+	sawAttack[me] = nil
 	for _, a in me:outgoingAttacks() do
 		attackingTroops += a:troops()
 		attacking = true
@@ -424,6 +428,7 @@ local function meInfo(me, withBorders: boolean)
 		attackingTroops = attackingTroops,
 		attacking = attacking,
 		allied = #me:alliances() > 0,
+		spawnTile = me:spawnTile(),
 	}
 	if withBorders then
 		local myID = me:smallID()
@@ -570,6 +575,13 @@ local function runTick()
 			states[i] = lastTile[t]
 		end
 		Net.Tick:FireAllClients(Net.packTiles(tick, order, states))
+	end
+
+	for _, plr in Players:GetPlayers() do
+		local me = mg:playerByClientID(clientIDOf(plr))
+		if me and #me:outgoingAttacks() > 0 then
+			sawAttack[me] = true
+		end
 	end
 
 	if tick % STATS_EVERY == 0 then

@@ -519,16 +519,7 @@ function TutorialPanel:_build()
 	end)
 	self.choice = choice
 
-	-- Map overlays: own-territory spawn ring and target crosshairs.
-	local ring = Style.frame(self.deps.mapLayer, "TutorialSpawnRing")
-	ring.AnchorPoint = Vector2.new(0.5, 0.5)
-	ring.ZIndex = 8
-	ring.Visible = false
-	local rc = Instance.new("UICorner")
-	rc.CornerRadius = UDim.new(0.5, 0)
-	rc.Parent = ring
-	self.ringStroke = Style.stroke(ring, C.cyberYellow, 3)
-	self.ring = ring
+	-- Target crosshairs on the map (the spawn ring is SpawnRing.luau).
 	self.crosshairs = {}
 end
 
@@ -540,7 +531,7 @@ function TutorialPanel:setActive(active: boolean)
 	if not active then
 		self:_setHighlight(nil)
 		self:_setMarked({})
-		self.ring.Visible = false
+		self.ringTarget = nil
 	end
 	self:_render()
 end
@@ -588,7 +579,7 @@ function TutorialPanel:tick()
 		self.completeTicks = 0
 		self:_setHighlight(nil)
 		self:_setMarked({})
-		self.ring.Visible = false
+		self.ringTarget = nil
 		self:_render()
 		return
 	end
@@ -639,8 +630,8 @@ function TutorialPanel:_syncMapMarkers(target: string?)
 	if me then
 		mx, my, msize = self.deps.namePlacement(me)
 	end
-	-- Pulsing ring on our own territory (setOwnSpawnRing).
-	self.ringTarget = if target == "territory" and mx then { mx, my, msize } else nil
+	-- Keep our spawn ring up while pointing at our territory (setOwnSpawnRing).
+	self.ringTarget = target == "territory"
 	if target ~= "tribes" and target ~= "nation" then
 		self:_setMarked({})
 		return
@@ -726,17 +717,6 @@ end
 -- Per frame (Main's RenderStepped): keep map overlays glued to the camera.
 function TutorialPanel:renderOverlays()
 	local camera = self.deps.camera
-	local t = os.clock()
-	local rt = self.active and self.ringTarget
-	self.ring.Visible = rt ~= nil
-	if rt then
-		local p = camera:screenPos(rt[1], rt[2])
-		local k = 0.5 - 0.5 * math.cos((t % 1.2) / 1.2 * 2 * math.pi)
-		local d = math.max(60, rt[3] * 3 * camera.zoom) * (1 + 0.12 * k)
-		self.ring.Position = UDim2.fromOffset(p.X, p.Y)
-		self.ring.Size = UDim2.fromOffset(d, d)
-		self.ringStroke.Transparency = 0.1 + 0.5 * k
-	end
 	for id, ch in self.crosshairs do
 		local x, y, size = self.deps.namePlacement(id)
 		ch.Visible = x ~= nil
@@ -747,6 +727,11 @@ function TutorialPanel:renderOverlays()
 			ch.Size = UDim2.fromOffset(d, d)
 		end
 	end
+end
+
+-- GameView.ownSpawnRing(): the tutorial wants our spawn ring shown.
+function TutorialPanel:wantsSpawnRing(): boolean
+	return self.active and self.ringTarget == true
 end
 
 -- Go to: our territory for the ring step, else the nearest marked player.

@@ -19,6 +19,7 @@ local Hud = require(script.Parent:WaitForChild("Hud"))
 local MapCamera = require(script.Parent:WaitForChild("MapCamera"))
 local NameLayer = require(script.Parent:WaitForChild("NameLayer"))
 local TerritoryRenderer = require(script.Parent:WaitForChild("TerritoryRenderer"))
+local SpawnRing = require(script.Parent:WaitForChild("SpawnRing"))
 local TutorialPanel = require(script.Parent:WaitForChild("TutorialPanel"))
 local UnitLayer = require(script.Parent:WaitForChild("UnitLayer"))
 
@@ -255,6 +256,8 @@ camera.onShiftScroll = function(z)
 	controlPanel:shiftScroll(z)
 end
 
+local spawnRing = SpawnRing.new(background, camera, gameMap)
+
 local function refreshPanelVisibility()
 	local mine = myStats()
 	controlPanel:setVisible(not inSpawnPhase and mine ~= nil and mine.tiles > 0)
@@ -424,6 +427,11 @@ RunService.RenderStepped:Connect(function()
 	renderer:flush()
 	unitLayer:render()
 	tutorial:renderOverlays()
+	-- Spawn ring: during the spawn phase once we picked a spot, and while the
+	-- tutorial points at our territory (syncSpawnOverlay).
+	local showRing = not gameOver and ((inSpawnPhase and haveSpawned) or tutorial:wantsSpawnRing())
+	spawnRing:set(if showRing then myInfo.spawnTile else nil)
+	spawnRing:render()
 	if inSpawnPhase and not gameOver then
 		local left = math.max(1, math.ceil((spawnPhaseTurns - estimatedTick()) / 10))
 		local mine = mySmallID and stats[mySmallID]
