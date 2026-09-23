@@ -4,7 +4,8 @@
 -- A water path query runs through a transformer chain shared per game:
 --   MiniMap( ShoreCoercing( Smoothing( ComponentCheck( HPA* ) ) ) )
 -- or, when the abstract graph is missing / tiny, MiniMap(ShoreCoercing(A*)).
--- TODO(port): WaterPathMemo (trade ships), Rail / Station / Air / Parabola.
+-- Air (SAM missiles) is here; Parabola (rockets) lives in Parabola.luau.
+-- TODO(port): WaterPathMemo (trade ships), Rail / Station.
 
 local AStarWater = require(script.Parent.AStarWater)
 local Transformers = require(script.Parent.Transformers)
@@ -247,5 +248,58 @@ function WaterPathFinder:invalidate()
 	self.stepper:invalidate()
 end
 PathFinder.WaterPathFinder = WaterPathFinder
+
+-- AirPathFinder (PathFinder.Air.ts): a straight-ish staircase seeded by the
+-- tick the finder was made, stepped like every other finder.
+
+local PseudoRandom = require(game:GetService("ReplicatedStorage").Shared.PseudoRandom)
+
+local AirFinder = {}
+AirFinder.__index = AirFinder
+
+function AirFinder.new(game)
+	return setmetatable({ game = game, seed = game:ticks() }, AirFinder)
+end
+
+function AirFinder:_computeNext(from: number, to: number, random): number
+	local g = self.game
+	local x, y = g:x(from), g:y(from)
+	local dstX, dstY = g:x(to), g:y(to)
+	if x == dstX and y == dstY then
+		return to
+	end
+	local nextX, nextY = x, y
+	local ratio = math.floor(1 + math.abs(dstY - y) / (math.abs(dstX - x) + 1))
+	if x == dstX then
+		nextY += if y < dstY then 1 else -1
+	elseif y == dstY then
+		nextX += if x < dstX then 1 else -1
+	elseif random:chance(ratio) then
+		nextX += if x < dstX then 1 else -1
+	else
+		nextY += if y < dstY then 1 else -1
+	end
+	return g:ref(nextX, nextY)
+end
+
+function AirFinder:findPath(from, to: number)
+	assert(type(from) == "number", "AirPathFinder does not support multiple start points")
+	local random = PseudoRandom.new(self.seed)
+	local path = { from }
+	local current = from
+	while current ~= to do
+		local nextTile = self:_computeNext(current, to, random)
+		if nextTile == current then
+			break
+		end
+		current = nextTile
+		table.insert(path, current)
+	end
+	return path
+end
+
+function PathFinder.Air(game)
+	return Stepper.new(AirFinder.new(game))
+end
 
 return PathFinder

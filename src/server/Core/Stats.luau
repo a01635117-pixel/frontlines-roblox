@@ -98,9 +98,17 @@ function Stats:attacksSent(player): number
 	return p.attacks[Stats.ATTACK_INDEX_SENT] or 0
 end
 
--- MIRV count feeds the MIRV price (Config.unitInfo). TODO(port): MIRVs.
+-- MIRV count feeds the MIRV price (Config.unitInfo).
 function Stats:numMirvsLaunched(): number
 	return self._mirvsLaunched or 0
+end
+
+-- Only the MIRV launch count has a simulation effect (the MIRV price);
+-- per-player bomb tallies are results-screen data.
+function Stats:bombLaunch(_player, _target, nukeType: string)
+	if nukeType == "MIRV" then
+		self._mirvsLaunched = (self._mirvsLaunched or 0) + 1
+	end
 end
 
 -- Recorded upstream for the results screen; no simulation effect.
@@ -127,6 +135,8 @@ Stats.recordKilledBy = noop
 Stats.recordDeathPosition = noop
 Stats.playerKilled = noop
 Stats.betray = noop
+Stats.bombLand = noop
+Stats.bombIntercept = noop
 Stats.allianceFormed = noop
 Stats.allianceEnded = noop
 

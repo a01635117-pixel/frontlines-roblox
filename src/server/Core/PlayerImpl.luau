@@ -274,7 +274,14 @@ function PlayerImpl:_canBuildUnitType(unitType: string, knownCost: number?): boo
 end
 
 function PlayerImpl:_canSpawnUnitType(unitType: string, targetTile: number, validTiles)
-	if unitType == UnitType.TransportShip then
+	if unitType == UnitType.MIRV then
+		if not self.mg:hasOwner(targetTile) then
+			return false
+		end
+		return self:nukeSpawn(targetTile, unitType)
+	elseif unitType == UnitType.AtomBomb or unitType == UnitType.HydrogenBomb then
+		return self:nukeSpawn(targetTile, unitType)
+	elseif unitType == UnitType.TransportShip then
 		return TransportShipUtils.canBuildTransportShip(self.mg, self, targetTile)
 	elseif unitType == UnitType.MIRVWarhead or unitType == UnitType.Shell or unitType == UnitType.SAMMissile then
 		return targetTile
@@ -293,8 +300,47 @@ function PlayerImpl:_canSpawnUnitType(unitType: string, targetTile: number, vali
 	then
 		return self:landBasedStructureSpawn(targetTile, validTiles)
 	end
-	-- TODO(port): nukeSpawn (AtomBomb / HydrogenBomb / MIRV), warshipSpawn.
+	-- TODO(port): warshipSpawn.
 	error(`TODO(port): spawning {unitType}`)
+end
+
+-- Closest ready silo (active, loaded, built) to launch from, or false.
+function PlayerImpl:nukeSpawn(tile: number, nukeType: string)
+	local mg = self.mg
+	if mg:isSpawnImmunityActive() then
+		return false
+	end
+	-- Impassable terrain cannot be nuked.
+	if mg:isImpassable(tile) then
+		return false
+	end
+	local owner = mg:owner(tile)
+	-- Allow nuking teammates after the game is over (aftergame fun), but not in singleplayer.
+	local gameOver = mg:getWinner() ~= nil and mg:config():gameConfig().gameType ~= GameTypes.GameType.Singleplayer
+	if owner:isPlayer() and self:isOnSameTeam(owner) and not gameOver then
+		return false
+	end
+	local config = mg:config()
+	-- Prevent launching nukes that would hit teammate structures (team games only).
+	if config:gameConfig().gameMode == GameTypes.GameMode.Team and nukeType ~= UnitType.MIRV and not gameOver then
+		local magnitude = config:nukeMagnitudes(nukeType)
+		local wouldHitTeammate = mg:anyUnitNearby(tile, magnitude.outer, GameTypes.Structures.types, function(unit)
+			return unit:owner():isPlayer() and self:isOnSameTeam(unit:owner())
+		end)
+		if wouldHitTeammate then
+			return false
+		end
+	end
+	local readySilos = {}
+	for _, silo in self:units(UnitType.MissileSilo) do
+		if silo:isActive() and not silo:isInCooldown() and not silo:isUnderConstruction() then
+			table.insert(readySilos, silo)
+		end
+	end
+	Util.sort(readySilos, function(a, b)
+		return mg:manhattanDist(a:tile(), tile) - mg:manhattanDist(b:tile(), tile)
+	end)
+	return if readySilos[1] then readySilos[1]:tile() else false
 end
 
 -- Structure placement -------------------------------------------------------------
@@ -446,9 +492,6 @@ local MAX_UPGRADE_AMOUNT = 50
 
 -- Unit types whose spawn rules are not ported yet: reported as unbuildable.
 local NOT_YET_SPAWNABLE = {
-	[UnitType.AtomBomb] = true,
-	[UnitType.HydrogenBomb] = true,
-	[UnitType.MIRV] = true,
 	[UnitType.Warship] = true,
 }
 
@@ -480,7 +523,7 @@ function PlayerImpl:buildableUnits(tile: number?, units: { string }?)
 				end
 			end
 			if NOT_YET_SPAWNABLE[u] then
-				canBuild = false -- TODO(port): nukes and warships
+				canBuild = false -- TODO(port): warships
 			else
 				canBuild = self:_canSpawnUnitType(u, tile, validTiles)
 			end

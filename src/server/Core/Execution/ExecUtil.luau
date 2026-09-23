@@ -95,4 +95,47 @@ function ExecUtil.getMode(counts)
 	return mode
 end
 
+-- Weighted tiles each player has in a blast (inner = 1, outer ring = 0.5):
+-- smallID -> weight, in first-seen order (JS Map). computeNukeBlastCounts.
+function ExecUtil.computeNukeBlastCounts(gm, targetTile: number, magnitude)
+	local inner2 = magnitude.inner * magnitude.inner
+	local order, counts = {}, {}
+	gm:circleSearch(targetTile, magnitude.outer, function(tile, d2)
+		local ownerSmallId = gm:ownerID(tile)
+		if ownerSmallId > 0 then
+			local weight = if d2 <= inner2 then 1 else 0.5
+			if counts[ownerSmallId] == nil then
+				table.insert(order, ownerSmallId)
+				counts[ownerSmallId] = 0
+			end
+			counts[ownerSmallId] += weight
+		end
+		return true
+	end)
+	return order, counts
+end
+
+-- Players (smallIDs, insertion order) angered by a nuke: over the weighted
+-- tile threshold, or owning a structure in the blast. listNukeBreakAlliance.
+function ExecUtil.listNukeBreakAlliance(game, targetTile: number, magnitude, threshold: number): { number }
+	local seen, out = {}, {}
+	local function add(id)
+		if not seen[id] then
+			seen[id] = true
+			table.insert(out, id)
+		end
+	end
+	local order, counts = ExecUtil.computeNukeBlastCounts(game, targetTile, magnitude)
+	for _, id in order do
+		if counts[id] > threshold then
+			add(id)
+		end
+	end
+	local Structures = require(script.Parent.Parent.GameTypes).Structures
+	for _, e in game:nearbyUnits(targetTile, magnitude.outer, Structures.types) do
+		add(e.unit:owner():smallID())
+	end
+	return out
+end
+
 return ExecUtil

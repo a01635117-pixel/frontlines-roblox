@@ -618,6 +618,50 @@ function Config:unitInfo(unitType: string)
 	return info
 end
 
+-- Nukes ------------------------------------------------------------------------------------
+
+function Config:nukeMagnitudes(unitType: string): { inner: number, outer: number }
+	if unitType == UnitType.MIRVWarhead then
+		return { inner = 12, outer = 18 }
+	elseif unitType == UnitType.AtomBomb then
+		return { inner = 12, outer = 30 }
+	elseif unitType == UnitType.HydrogenBomb then
+		return { inner = 80, outer = 100 }
+	end
+	error(`Unknown nuke type: {unitType}`)
+end
+function Config:nukeAllianceBreakThreshold(): number
+	return 100
+end
+function Config:nukeSpeed(unitType: string): number
+	if unitType == UnitType.AtomBomb or unitType == UnitType.HydrogenBomb then
+		return 10
+	elseif unitType == UnitType.MIRV then
+		return 15
+	elseif unitType == UnitType.MIRVWarhead then
+		return 22
+	end
+	error(`Unknown nuke type: {unitType}`)
+end
+function Config:mirvNormalizeTargetTicks(): number
+	return 14
+end
+function Config:defaultNukeTargetableRange(): number
+	return 150
+end
+-- Humans can be soldiers, soldiers attacking, soldiers in boat etc.
+function Config:nukeDeathFactor(nukeType: string, humans: number, tilesOwned: number, maxTroops: number): number
+	if nukeType ~= UnitType.MIRVWarhead then
+		return (5 * humans) / math.max(1, tilesOwned)
+	end
+	local targetTroops = 0.03 * maxTroops
+	local excessTroops = math.max(0, humans - targetTroops)
+	local scalingFactor = 500
+	local steepness = 2
+	local normalizedExcess = excessTroops / maxTroops
+	return scalingFactor * (1 - DetMath.exp(-steepness * normalizedExcess))
+end
+
 function Config:defaultSamRange(): number
 	return 70
 end

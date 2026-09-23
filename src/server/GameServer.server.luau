@@ -96,8 +96,8 @@ local runner = GameRunner.create({
 		infiniteGold = false,
 		infiniteTroops = false,
 		instantBuild = false,
-		-- Not ported yet: rail network, SAMs, nukes, warships (silos only matter with nukes).
-		disabledUnits = { "Factory", "SAM Launcher", "Missile Silo", "Atom Bomb", "Hydrogen Bomb", "MIRV", "Warship" },
+		-- Not ported yet: rail network (factories), warships.
+		disabledUnits = { "Factory", "Warship" },
 		nations = "disabled", -- TODO(port): nations
 	},
 	players = players,

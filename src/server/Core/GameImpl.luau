@@ -185,6 +185,21 @@ function GameImpl:queueWaterConversion(tile: number)
 	self._waterManager:queueTile(tile)
 end
 
+-- Every tile inside a blast radius, drained once per tick for clients
+-- (upstream feeds its "nukeable layer"; here the explosion effect).
+function GameImpl:queueNukeImpact(tile: number)
+	self._nukeImpactQueue = self._nukeImpactQueue or {}
+	table.insert(self._nukeImpactQueue, tile)
+end
+function GameImpl:drainNukeImpacts(): { number }
+	local tiles = self._nukeImpactQueue or {}
+	self._nukeImpactQueue = {}
+	return tiles
+end
+
+-- Client-side motion plans are not used: unit positions are replicated.
+function GameImpl:recordMotionPlan(_record) end
+
 -- Water navigation (WaterManager) ------------------------------------------------
 
 function GameImpl:miniWaterHPA()

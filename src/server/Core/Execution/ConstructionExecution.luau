@@ -104,12 +104,20 @@ function ConstructionExecution:_completeConstruction()
 		mg:addExecution(StructureExecutions.DefensePostExecution.new(self.structure))
 	elseif t == UnitType.City then
 		mg:addExecution(StructureExecutions.CityExecution.new(self.structure))
-	elseif t == UnitType.AtomBomb or t == UnitType.HydrogenBomb or t == UnitType.MIRV then
-		warn("TODO(port): nukes") -- NukeExecution / MirvExecution
+	elseif t == UnitType.AtomBomb or t == UnitType.HydrogenBomb then
+		-- NukeExecution staggers same-tick launches per silo itself.
+		local NukeExecution = require(script.Parent.NukeExecution)
+		for _ = 1, self.amount or 1 do
+			mg:addExecution(NukeExecution.new(t, self.player, self.tile, nil, -1, 0, self.rocketDirectionUp))
+		end
+	elseif t == UnitType.MIRV then
+		local MirvExecution = require(script.Parent.MirvExecution)
+		mg:addExecution(MirvExecution.new(self.player, self.tile))
 	elseif t == UnitType.Warship then
 		warn("TODO(port): warships") -- WarshipExecution
 	elseif t == UnitType.SAMLauncher then
-		warn("TODO(port): SAMLauncherExecution")
+		local SAMExecutions = require(script.Parent.SAMExecutions)
+		mg:addExecution(SAMExecutions.SAMLauncherExecution.new(self.player, nil, self.structure))
 	elseif t == UnitType.Factory then
 		warn("TODO(port): FactoryExecution")
 	else
