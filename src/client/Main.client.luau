@@ -18,6 +18,7 @@ local ControlPanel = require(script.Parent:WaitForChild("ControlPanel"))
 local EventsDisplay = require(script.Parent:WaitForChild("EventsDisplay"))
 local Format = require(Shared:WaitForChild("Format"))
 local Hud = require(script.Parent:WaitForChild("Hud"))
+local LobbyScreen = require(script.Parent:WaitForChild("LobbyScreen"))
 local MapCamera = require(script.Parent:WaitForChild("MapCamera"))
 local NameLayer = require(script.Parent:WaitForChild("NameLayer"))
 local TerritoryRenderer = require(script.Parent:WaitForChild("TerritoryRenderer"))
@@ -55,8 +56,12 @@ gui.Parent = player:WaitForChild("PlayerGui")
 
 -- Match state --------------------------------------------------------------------
 
+-- Lobby until the server starts the match (or we join one in progress).
+local lobbyScreen = LobbyScreen.new(gui, Net)
 local state = Net.GameState.OnClientEvent:Wait()
-local gameMap, _mini, manifest = MapLoader.load(Shared.Maps[state.mapId])
+lobbyScreen:destroy()
+-- The server replicates only the selected map.
+local gameMap, _mini, manifest = MapLoader.load(Shared:WaitForChild("Maps"):WaitForChild(state.mapId))
 local W, H = gameMap:width(), gameMap:height()
 
 local camera = MapCamera.new(background, W, H)

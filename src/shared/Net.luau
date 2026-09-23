@@ -13,6 +13,7 @@
 --   Me(info)           private: { costs = { [unitType] = gold }, disabled = { [unitType] = true }, maxTroops,
 --                      troopRate (per s),
 --                      attackingTroops, attacking, allied, bordering? = { smallID }, hasCoast? }
+--   Lobby(state)       pre-match lobby: { settings, hostUserId, secondsLeft?, players } | { starting = true }
 --   Event(evt)         game events: spawn phase end, winner, conquest, GoldGain (private)
 -- Client -> server
 --   Intent(intent)     { type = "spawn", tile } | { type = "click", tile, ratio }
@@ -22,6 +23,7 @@
 --                      | { type = "delete_at", tile }     (closest own structure within 5 tiles)
 --                      | { type = "move_warship", unitIds, tile }
 --                      | { type = "attack_at" | "boat_at", tile, ratio }   (radial menu)
+--                      | { type = "lobby_set", key, value } | { type = "lobby_start" }   (host only)
 --   Query(q) -> result  RemoteFunction: { tile } -> { units = { { unit, cost, canBuild, canUpgrade,
 --                      upgradeCosts, upgradeTile } }, deleteUnit, canAttack, canBoat, ownerSmallID, inSpawnPhase }
 
@@ -30,7 +32,7 @@ local EncodingService = game:GetService("EncodingService")
 
 local Net = {}
 
-local NAMES = { "GameState", "Roster", "Tick", "Stats", "Names", "Units", "Me", "Event", "Intent" }
+local NAMES = { "GameState", "Roster", "Tick", "Stats", "Names", "Units", "Me", "Event", "Lobby", "Intent" }
 
 local FUNCTIONS = { "Query" }
 

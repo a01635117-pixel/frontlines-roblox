@@ -95,7 +95,7 @@ function SimSpec.reset(vectorsName: string?)
 	V = require(script.Parent[vectorsName or "SimVectors"])
 	local GameRunner = require(ServerScriptService.Core.GameRunner)
 	local t0 = os.clock()
-	local runner = GameRunner.create({ gameID = V.gameID, config = V.config, players = V.players or {} }, Shared.Maps[V.map])
+	local runner = GameRunner.create({ gameID = V.gameID, config = V.config, players = V.players or {} }, game:GetService("ServerStorage").Maps[V.map])
 	-- Scripted intents grouped by the tick they were issued.
 	local intentsByTick = {}
 	for _, r in V.intents or {} do

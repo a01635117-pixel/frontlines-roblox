@@ -36,7 +36,7 @@ return function()
 			nations = "disabled",
 		},
 		players = {},
-	}, Shared.Maps.World)
+	}, game:GetService("ServerStorage").Maps.World)
 	local setupMs = (os.clock() - t0) * 1000
 	local game = runner.game
 	local graph = game:miniWaterGraph()

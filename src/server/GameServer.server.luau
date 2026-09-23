@@ -4,8 +4,13 @@
 -- OpenFrontIO's deterministic core). Clients send intents and receive only
 -- what changed: tile ownership deltas, player stats and events.
 --
--- Script attributes (optional): Map (default "World"), Bots (default 250),
--- LobbySeconds (default 3 in Studio, 20 live).
+-- Before each match a lobby lets the host (private server owner, else the
+-- earliest player) pick the map and the game settings (upstream
+-- SinglePlayerModal / HostLobbyModal); everyone sees them live. The host
+-- starts the match; live public servers also auto-start after a countdown.
+--
+-- Script attributes (optional): AutoStartSeconds (default 60 live, none in
+-- Studio — the host presses Start).
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -19,9 +24,7 @@ local GameTypes = require(script.Parent.Core.GameTypes)
 local Util = require(Shared.Util)
 local NameBoxCalculator = require(script.Parent.Core.NameBoxCalculator)
 
-local MAP_ID = script:GetAttribute("Map") or "World"
-local BOTS = script:GetAttribute("Bots") or 250
-local LOBBY_SECONDS = script:GetAttribute("LobbySeconds") or (if RunService:IsStudio() then 3 else 20)
+local AUTO_START_SECONDS = script:GetAttribute("AutoStartSeconds") or (if RunService:IsStudio() then nil else 60)
 local TICK_SECONDS = 0.1 -- Config.msPerTick() = 100
 local STATS_EVERY = 5 -- ticks between stats broadcasts
 local MAX_INTENTS_PER_TICK = 10 -- per player
@@ -68,22 +71,192 @@ end
 
 -- Lobby ---------------------------------------------------------------------------
 
+local ServerStorage = game:GetService("ServerStorage")
+local MapCatalog = require(Shared.Data.MapCatalog)
+
+local DIFFICULTIES = { "Easy", "Medium", "Hard", "Impossible" }
+local STARTING_GOLD = { 0, 1000000, 5000000, 25000000 }
+local GOLD_MULTIPLIER = { 1, 2, 5 }
+local MAX_BOTS = 400
+-- Units the host may disable (not ported yet: Factory, forced off).
+local FORCED_OFF = { Factory = true }
+
+local lobby = {
+	settings = {
+		map = "World",
+		difficulty = "Medium",
+		bots = 250,
+		nations = false, -- TODO(port): nations (the toggle unlocks once they exist)
+		infiniteGold = false,
+		infiniteTroops = false,
+		instantBuild = false,
+		startingGold = 0,
+		goldMultiplier = 1,
+		disabledUnits = { "Factory" },
+	},
+	hostUserId = nil :: number?,
+	startAt = nil :: number?,
+	started = false,
+}
+
+local function mapInfo(id: string)
+	for _, m in MapCatalog do
+		if m.id == id then
+			return m
+		end
+	end
+	return nil
+end
+
+local function pickHost()
+	local owner = game.PrivateServerOwnerId
+	if owner ~= 0 and Players:GetPlayerByUserId(owner) then
+		lobby.hostUserId = owner
+		return
+	end
+	if lobby.hostUserId and Players:GetPlayerByUserId(lobby.hostUserId) then
+		return
+	end
+	local first = Players:GetPlayers()[1]
+	lobby.hostUserId = if first then first.UserId else nil
+end
+
+local function lobbyState()
+	local names = {}
+	for _, p in Players:GetPlayers() do
+		table.insert(names, p.DisplayName)
+	end
+	return {
+		settings = lobby.settings,
+		hostUserId = lobby.hostUserId,
+		secondsLeft = if lobby.startAt then math.max(0, math.ceil(lobby.startAt - os.clock())) else nil,
+		players = names,
+	}
+end
+
+local function broadcastLobby()
+	Net.Lobby:FireAllClients(lobbyState())
+end
+
+-- Validated setting change from the host.
+local function setLobbySetting(key: string, value: any)
+	local st = lobby.settings
+	if key == "map" then
+		if type(value) == "string" and mapInfo(value) and ServerStorage.Maps:FindFirstChild(value) then
+			st.map = value
+		end
+	elseif key == "difficulty" then
+		if table.find(DIFFICULTIES, value) then
+			st.difficulty = value
+		end
+	elseif key == "bots" then
+		if type(value) == "number" and value == value then
+			st.bots = math.clamp(math.floor(value), 0, MAX_BOTS)
+		end
+	elseif key == "infiniteGold" or key == "infiniteTroops" or key == "instantBuild" then
+		if type(value) == "boolean" then
+			st[key] = value
+		end
+	elseif key == "startingGold" then
+		if table.find(STARTING_GOLD, value) then
+			st.startingGold = value
+		end
+	elseif key == "goldMultiplier" then
+		if table.find(GOLD_MULTIPLIER, value) then
+			st.goldMultiplier = value
+		end
+	elseif key == "unit" then
+		-- value = { unit, enabled }
+		if type(value) == "table" and table.find(BUILDABLE, value[1]) and type(value[2]) == "boolean" and not FORCED_OFF[value[1]] then
+			local list = st.disabledUnits
+			local i = table.find(list, value[1])
+			if value[2] and i then
+				table.remove(list, i)
+			elseif not value[2] and not i then
+				table.insert(list, value[1])
+			end
+		end
+	end
+end
+
+local lobbyConn = Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
+	if lobby.started or type(intent) ~= "table" or player.UserId ~= lobby.hostUserId then
+		return
+	end
+	if intent.type == "lobby_set" and type(intent.key) == "string" then
+		setLobbySetting(intent.key, intent.value)
+		broadcastLobby()
+	elseif intent.type == "lobby_start" then
+		lobby.started = true
+	end
+end)
+local joinConn = Players.PlayerAdded:Connect(function()
+	pickHost()
+	broadcastLobby()
+end)
+local leaveConn = Players.PlayerRemoving:Connect(function()
+	task.defer(function()
+		pickHost()
+		broadcastLobby()
+	end)
+end)
+
 while #Players:GetPlayers() == 0 do
 	Players.PlayerAdded:Wait()
 end
-task.wait(LOBBY_SECONDS)
+pickHost()
+if AUTO_START_SECONDS then
+	lobby.startAt = os.clock() + AUTO_START_SECONDS
+end
+broadcastLobby()
+local lastBroadcast = os.clock()
+while not lobby.started do
+	if lobby.startAt and os.clock() >= lobby.startAt then
+		lobby.started = true
+		break
+	end
+	if os.clock() - lastBroadcast >= 1 then
+		lastBroadcast = os.clock()
+		broadcastLobby()
+	end
+	task.wait(0.1)
+end
+lobbyConn:Disconnect()
+joinConn:Disconnect()
+leaveConn:Disconnect()
+Net.Lobby:FireAllClients({ starting = true })
+
+-- Only the selected map is replicated to clients.
+local st = lobby.settings
+local MAP_ID = st.map
+local mapsFolder = Shared:FindFirstChild("Maps")
+if not mapsFolder then
+	mapsFolder = Instance.new("Folder")
+	mapsFolder.Name = "Maps"
+	mapsFolder.Parent = Shared
+end
+if not mapsFolder:FindFirstChild(MAP_ID) then
+	ServerStorage.Maps[MAP_ID]:Clone().Parent = mapsFolder
+end
 
 local gameID = string.sub(HttpService:GenerateGUID(false), 1, 8)
 local players = {}
 for _, p in Players:GetPlayers() do
-	table.insert(players, { username = p.DisplayName, clientID = clientIDOf(p) })
+	table.insert(players, { username = p.DisplayName, clientID = clientIDOf(p), isLobbyCreator = p.UserId == lobby.hostUserId })
+end
+
+local disabledUnits = table.clone(st.disabledUnits)
+for unit in FORCED_OFF do
+	if not table.find(disabledUnits, unit) then
+		table.insert(disabledUnits, unit)
+	end
 end
 
 local runner = GameRunner.create({
 	gameID = gameID,
 	config = {
 		gameMap = MAP_ID,
-		difficulty = "Medium",
+		difficulty = st.difficulty,
 		donateGold = false,
 		donateTroops = false,
 		-- Solo in Studio behaves like upstream Singleplayer: no spawn timer, the
@@ -94,17 +267,19 @@ local runner = GameRunner.create({
 		robloxWinRule = true,
 		gameMode = "Free For All",
 		gameMapSize = "Compact",
-		bots = BOTS,
+		bots = st.bots,
 		randomSpawn = false,
-		infiniteGold = false,
-		infiniteTroops = false,
-		instantBuild = false,
-		-- Not ported yet: rail network (factories).
-		disabledUnits = { "Factory" },
-		nations = "disabled", -- TODO(port): nations
+		infiniteGold = st.infiniteGold,
+		infiniteTroops = st.infiniteTroops,
+		instantBuild = st.instantBuild,
+		startingGold = if st.startingGold > 0 then st.startingGold else nil,
+		goldMultiplier = if st.goldMultiplier ~= 1 then st.goldMultiplier else nil,
+		disabledUnits = disabledUnits,
+		nations = if st.nations then "default" else "disabled",
 	},
 	players = players,
-}, Shared.Maps[MAP_ID])
+}, ServerStorage.Maps[MAP_ID])
+local BOTS = st.bots
 local mg = runner.game
 print(`[GameServer] game {gameID} on {MAP_ID} with {#players} human(s) and {BOTS} bots`)
 
