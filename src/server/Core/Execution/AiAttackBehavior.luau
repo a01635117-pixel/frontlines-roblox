@@ -3,13 +3,14 @@
 -- Ported so far: the parts tribes (bots) use — attackRandomTarget,
 -- getNeighborTraitorToAttack, sendAttack and their helpers.
 -- TODO(port): nation-only behaviour (maybeAttack, attackBestTarget,
--- assistAllies, attackBots, emoji/alliance behaviours) and boat attacks
--- (TransportShipExecution). Until boats exist, boat attacks report "not
--- sent", which is exactly what upstream does with transport ships disabled.
+-- assistAllies, attackBots, attackWithRandomBoat, emoji/alliance behaviours).
 
 local Core = script.Parent.Parent
 local GameTypes = require(Core.GameTypes)
 local AttackExecution = require(script.Parent.AttackExecution)
+local ExecUtil = require(script.Parent.ExecUtil)
+local TransportShipExecution = require(script.Parent.TransportShipExecution)
+local TransportShipUtils = require(Core.TransportShipUtils)
 
 local PlayerType = GameTypes.PlayerType
 local Difficulty = GameTypes.Difficulty
@@ -173,11 +174,46 @@ function AiAttackBehavior:_shoreTiles(player): { number }
 	return out
 end
 
+-- Scans every 10th shore border tile for unowned land within 5 water tiles
+-- in each cardinal direction and sends a boat to the first match.
+local DIRECTIONS = { { 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 } }
 function AiAttackBehavior:_sendBoatAttackToNearbyTerraNullius(): boolean
-	if self.game:config():isUnitDisabled(UnitType.TransportShip) then
+	local game, player = self.game, self.player
+	if game:config():isUnitDisabled(UnitType.TransportShip) then
 		return false
 	end
-	-- TODO(port): TransportShipExecution — scan shores and launch a boat.
+	if player:unitCount(UnitType.TransportShip) >= game:config():boatMaxNumber() then
+		return false
+	end
+	local shores = self:_shoreTiles(player)
+	for i = 1, #shores, 10 do
+		local border = shores[i]
+		local bx, by = game:x(border), game:y(border)
+		for _, d in DIRECTIONS do
+			local dx, dy = d[1], d[2]
+			local x1, y1 = bx + dx, by + dy
+			if not game:isValidCoord(x1, y1) or not game:isWater(game:ref(x1, y1)) then
+				continue
+			end
+			local nx, ny = bx + dx * 5, by + dy * 5
+			if not game:isValidCoord(nx, ny) then
+				continue
+			end
+			local tile = game:ref(nx, ny)
+			if not game:isLand(tile) or game:isImpassable(tile) or game:hasOwner(tile) or game:hasFallout(tile) then
+				continue
+			end
+			if not TransportShipUtils.canBuildTransportShip(game, player, tile) then
+				continue
+			end
+			local troops = math.min(player:troops() / 5, self:_troopSendCapForExpansion())
+			if troops < 1 then
+				return false
+			end
+			game:addExecution(TransportShipExecution.new(player, tile, troops))
+			return true
+		end
+	end
 	return false
 end
 
@@ -333,12 +369,26 @@ function AiAttackBehavior:_sendLandAttack(target): boolean
 	return true
 end
 
-function AiAttackBehavior:_sendBoatAttack(_target): boolean
-	if self.game:config():isUnitDisabled(UnitType.TransportShip) then
+function AiAttackBehavior:_sendBoatAttack(target): boolean
+	local game = self.game
+	if game:config():isUnitDisabled(UnitType.TransportShip) then
 		return false
 	end
-	-- TODO(port): closestTwoTiles + canBuildTransportShip + TransportShipExecution.
-	return false
+	local _, closestY = ExecUtil.closestTwoTiles(game, self:_shoreTiles(self.player), self:_shoreTiles(target))
+	if closestY == nil then
+		return false
+	end
+	if not TransportShipUtils.canBuildTransportShip(game, self.player, closestY) then
+		return false
+	end
+	local troops = self:_calculateAttackTroops(target, function()
+		return self.player:troops() / 5
+	end)
+	if troops == nil then
+		return false
+	end
+	game:addExecution(TransportShipExecution.new(self.player, closestY, troops))
+	return true
 end
 
 function AiAttackBehavior:_calculateBotAttackTroops(target, maxTroops: number): number

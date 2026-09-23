@@ -5,7 +5,7 @@
 //   cd ../OpenFrontIO && npx tsx ../OpenFrontRoblox/tools/golden-sim.mts
 //
 // Writes tests/SimVectors.luau. The scenario only uses systems the port has
-// (transport ships and factories disabled, no nations, no humans), so any
+// (factories disabled, no nations, no humans; boats ON), so any
 // difference is a porting bug, not a missing feature.
 
 import crypto from "node:crypto";
@@ -28,8 +28,10 @@ export const SCENARIO = {
   gameID: "golden01",
   mapDir: "world",
   bots: 40,
-  ticks: 1000,
-  snapshots: [0, 100, 200, 201, 202, 205, 210, 250, 300, 400, 600, 800, 1000],
+  ticks: 1500,
+  snapshots: [0, 100, 200, 201, 202, 205, 210, 250, 300, 400, 600, 800, 1000, 1200, 1500],
+  // Factories only (rail network not ported yet); transport ships ON.
+  disabledUnits: ["Factory"],
 };
 
 const gameConfig = {
@@ -45,7 +47,7 @@ const gameConfig = {
   infiniteGold: false,
   infiniteTroops: false,
   instantBuild: false,
-  disabledUnits: ["Transport", "Factory"],
+  disabledUnits: SCENARIO.disabledUnits,
   nations: "disabled",
 };
 
@@ -115,11 +117,13 @@ return {
 \tmap = "World",
 \tbots = ${SCENARIO.bots},
 \tticks = ${SCENARIO.ticks},
+\t-- Units ever created (boats) by the final tick.
+\tunitsCreated = ${(game as any)._nextUnitID - 1},
 \tconfig = {
 \t\tgameMap = "World", difficulty = "Medium", donateGold = false, donateTroops = false,
 \t\tgameType = "Private", gameMode = "Free For All", gameMapSize = "Compact",
 \t\tbots = ${SCENARIO.bots}, randomSpawn = false, infiniteGold = false, infiniteTroops = false,
-\t\tinstantBuild = false, disabledUnits = { "Transport", "Factory" }, nations = "disabled",
+\t\tinstantBuild = false, disabledUnits = { ${SCENARIO.disabledUnits.map((u) => JSON.stringify(u)).join(", ")} }, nations = "disabled",
 \t},
 \tsnapshots = {
 ${snaps

@@ -8,7 +8,7 @@
 --   tribes: { { name } }?,  -- purchased tribe names
 -- }
 -- Intents mirror upstream's wire intents: { type = "attack" | "spawn" |
--- "cancel_attack", clientID, ... }.
+-- "cancel_attack" | "boat" | "cancel_boat", clientID, ... }.
 
 local Shared = game:GetService("ReplicatedStorage").Shared
 local MapLoader = require(Shared.MapLoader)
@@ -22,6 +22,7 @@ local AttackExecution = require(Exec.AttackExecution)
 local SmallExecutions = require(Exec.SmallExecutions)
 local SpawnExecution = require(Exec.SpawnExecution)
 local TribeSpawner = require(Exec.TribeSpawner)
+local TransportShipExecution = require(Exec.TransportShipExecution)
 
 local PlayerType = GameTypes.PlayerType
 local GameType = GameTypes.GameType
@@ -56,8 +57,12 @@ function Executor:createExec(intent)
 	elseif t == "spawn" then
 		-- fromIntent: subject to the spawn-phase gate.
 		return SpawnExecution.new(self.gameID, player:info(), intent.tile, true)
+	elseif t == "boat" then
+		return TransportShipExecution.new(player, intent.dst, intent.troops)
+	elseif t == "cancel_boat" then
+		return SmallExecutions.BoatRetreatExecution.new(player, intent.unitID)
 	end
-	-- TODO(port): boat, alliances, targeting, emoji, donations, embargo,
+	-- TODO(port): alliances, targeting, emoji, donations, embargo,
 	-- build/upgrade/delete units, quick chat, disconnect marking, pause.
 	warn(`TODO(port): intent type {t}`)
 	return SmallExecutions.NoOpExecution.new()

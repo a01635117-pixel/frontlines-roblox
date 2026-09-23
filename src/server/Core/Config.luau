@@ -490,6 +490,226 @@ function Config:troopIncreaseRate(player): number
 	return math.min(player:troops() + toAdd, max) - player:troops()
 end
 
+-- Units ----------------------------------------------------------------------------
+
+local SAM_CONSTRUCTION_TICKS = 30 * 10
+Config.SAM_CONSTRUCTION_TICKS = SAM_CONSTRUCTION_TICKS
+
+function Config:_hasInfiniteGoldFor(player): boolean
+	if self:infiniteGold() then
+		return true
+	end
+	return self:_hostCheats().infiniteGold == true and player:isLobbyCreator()
+end
+
+-- Cost counts built units of `types` (owned vs constructed, whichever is lower).
+function Config:_costWrapper(costFn: (number) -> number, ...: string)
+	local types = { ... }
+	return function(_game, player, extraUnits: number?): number
+		if player:type() == PlayerType.Human and self:_hasInfiniteGoldFor(player) then
+			return 0
+		end
+		local numUnits = 0
+		for _, t in types do
+			numUnits += math.min(player:unitsOwned(t), player:unitsConstructed(t))
+		end
+		return math.floor(costFn(numUnits + (extraUnits or 0)))
+	end
+end
+
+local function free()
+	return 0
+end
+
+-- UnitInfo: { cost(game, player, extraUnits?) -> gold, maxHealth?, damage?,
+-- constructionDuration?, upgradable? }
+function Config:unitInfo(unitType: string)
+	self._unitInfoCache = self._unitInfoCache or {}
+	local cached = self._unitInfoCache[unitType]
+	if cached then
+		return cached
+	end
+	local pow2 = DetMath.pow2
+	local instant = self:instantBuild()
+	local info
+	if unitType == UnitType.TransportShip then
+		info = { cost = free }
+	elseif unitType == UnitType.Warship then
+		info = {
+			cost = self:_costWrapper(function(n)
+				return math.min(1000000, (n + 1) * 250000)
+			end, UnitType.Warship),
+			maxHealth = 1000,
+		}
+	elseif unitType == UnitType.Shell then
+		info = { cost = free, damage = 250 }
+	elseif unitType == UnitType.SAMMissile then
+		info = { cost = free }
+	elseif unitType == UnitType.Port then
+		info = {
+			cost = self:_costWrapper(function(n)
+				return math.min(1000000, pow2(n) * 125000)
+			end, UnitType.Port, UnitType.Factory),
+			constructionDuration = if instant then 0 else 5 * 10,
+			upgradable = true,
+		}
+	elseif unitType == UnitType.AtomBomb then
+		info = { cost = self:_costWrapper(function()
+			return 750000
+		end, UnitType.AtomBomb) }
+	elseif unitType == UnitType.HydrogenBomb then
+		info = { cost = self:_costWrapper(function()
+			return 5000000
+		end, UnitType.HydrogenBomb) }
+	elseif unitType == UnitType.MIRV then
+		info = {
+			cost = function(game, player)
+				if player:type() == PlayerType.Human and self:_hasInfiniteGoldFor(player) then
+					return 0
+				end
+				return 25000000 + game:stats():numMirvsLaunched() * 15000000
+			end,
+		}
+	elseif unitType == UnitType.MIRVWarhead or unitType == UnitType.TradeShip or unitType == UnitType.Train then
+		info = { cost = free }
+	elseif unitType == UnitType.MissileSilo then
+		info = {
+			cost = self:_costWrapper(function()
+				return 1000000
+			end, UnitType.MissileSilo),
+			constructionDuration = if instant then 0 else 10 * 10,
+			upgradable = true,
+		}
+	elseif unitType == UnitType.DefensePost then
+		info = {
+			cost = self:_costWrapper(function(n)
+				return math.min(250000, (n + 1) * 50000)
+			end, UnitType.DefensePost),
+			constructionDuration = if instant then 0 else 5 * 10,
+		}
+	elseif unitType == UnitType.SAMLauncher then
+		info = {
+			cost = self:_costWrapper(function(n)
+				return math.min(3000000, (n + 1) * 1500000)
+			end, UnitType.SAMLauncher),
+			constructionDuration = if instant then 0 else SAM_CONSTRUCTION_TICKS,
+			upgradable = true,
+		}
+	elseif unitType == UnitType.City then
+		info = {
+			cost = self:_costWrapper(function(n)
+				return math.min(1000000, pow2(n) * 125000)
+			end, UnitType.City),
+			constructionDuration = if instant then 0 else 2 * 10,
+			upgradable = true,
+		}
+	elseif unitType == UnitType.Factory then
+		info = {
+			cost = self:_costWrapper(function(n)
+				return math.min(1000000, pow2(n) * 125000)
+			end, UnitType.Factory, UnitType.Port),
+			constructionDuration = if instant then 0 else 2 * 10,
+			upgradable = true,
+		}
+	else
+		error(`Unexpected unit type: {unitType}`)
+	end
+	self._unitInfoCache[unitType] = info
+	return info
+end
+
+function Config:defaultSamRange(): number
+	return 70
+end
+function Config:maxSamRange(): number
+	return 150
+end
+function Config:samRange(level: number): number
+	return self:maxSamRange() - 480 / (level + 5)
+end
+function Config:samUpgradeDuration(): number
+	return math.floor(self:SAMCooldown() / 2)
+end
+function Config:dynamicSamRange(sam, currentTick: number): number
+	local state = sam:samLauncherState()
+	if state == nil or state.upgradeStartTick == nil then
+		return self:samRange(sam:level())
+	end
+	local duration = state.duration or self:samUpgradeDuration()
+	local elapsed = currentTick - state.upgradeStartTick
+	if elapsed >= duration then
+		return self:samRange(state.targetLevel)
+	end
+	local targetRange = self:samRange(state.targetLevel)
+	return state.startRange + ((targetRange - state.startRange) * elapsed) / duration
+end
+function Config:defaultSamMissileSpeed(): number
+	return 12
+end
+function Config:structureMinDist(): number
+	return 15
+end
+function Config:shellLifetime(): number
+	return 50
+end
+function Config:warshipShellLifetime(): number
+	return 20
+end
+function Config:warshipPatrolRange(): number
+	return 100
+end
+function Config:warshipTargettingRange(): number
+	return 130
+end
+function Config:warshipShellAttackRate(): number
+	return 20
+end
+function Config:warshipDockingRange(): number
+	return 5
+end
+function Config:warshipPortHealingBonusPerLevel(): number
+	return 5
+end
+function Config:warshipRetreatHealthPercent(): number
+	return 75
+end
+function Config:warshipPassiveHealing(): number
+	return 1
+end
+function Config:warshipPassiveHealingRange(): number
+	return 150
+end
+function Config:warshipPortSwitchThreshold(): number
+	return 0.75
+end
+function Config:warshipMaxVeterancy(): number
+	return 3
+end
+function Config:warshipVeterancyHealthBonus(): number
+	return 20
+end
+function Config:warshipVeterancyShellDamageBonus(): number
+	return 20
+end
+function Config:warshipVeterancyTransportKills(): number
+	return 10
+end
+function Config:warshipVeterancyTradeCaptures(): number
+	return 25
+end
+function Config:defensePostShellAttackRate(): number
+	return 100
+end
+function Config:safeFromPiratesCooldownMax(): number
+	return 20
+end
+function Config:defensePostTargettingRange(): number
+	return 75
+end
+function Config:radiusPortSpawn(): number
+	return 20
+end
+
 function Config:goldAdditionRate(player): number
 	local multiplier = self:_goldMultiplierFor(player)
 	local baseRate = if player:type() == PlayerType.Bot then 50 else 100

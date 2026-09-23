@@ -16,6 +16,7 @@ local GameTypes = require(script.Parent.GameTypes)
 local PlayerImpl = require(script.Parent.PlayerImpl)
 local Stats = require(script.Parent.Stats)
 local WaterManager = require(script.Parent.Pathfinding.WaterManager)
+local UnitGrid = require(script.Parent.UnitGrid)
 
 local PlayerType = GameTypes.PlayerType
 local GameMode = GameTypes.GameMode
@@ -76,6 +77,8 @@ function GameImpl.new(humans, nations, map, miniGameMap, config, teamGameSpawnAr
 		_stats = Stats.new(),
 	}, GameImpl)
 
+	self._unitGrid = UnitGrid.new(map)
+	self._unitMap = {} -- id -> unit
 	self._waterManager = WaterManager.new(map, miniGameMap, config:disableNavMesh())
 	if config:gameConfig().gameMode == GameMode.Team then
 		self:_populateTeams()
@@ -204,28 +207,92 @@ function GameImpl:getWaterComponentSize(tile: number): number?
 end
 
 -- Units ---------------------------------------------------------------------------
--- TODO(port): UnitImpl / UnitGrid. No units exist yet.
 
-function GameImpl:unit(_id: number)
-	return nil
+function GameImpl:unit(id: number)
+	return self._unitMap[id]
 end
-function GameImpl:units(...)
-	return {}
+
+-- units() / units(type, ...) / units({types}) across all players, in player order.
+function GameImpl:units(...: any)
+	local out = {}
+	local n = select("#", ...)
+	local wanted = nil
+	if n > 0 then
+		local first = ...
+		if type(first) == "table" then
+			if #first > 0 then
+				wanted = {}
+				for _, t in first do
+					wanted[t] = true
+				end
+			end
+		else
+			wanted = {}
+			for i = 1, n do
+				local t = select(i, ...)
+				if t ~= nil then
+					wanted[t] = true
+				end
+			end
+		end
+	end
+	for _, p in self._playerList do
+		for _, u in p:units() do
+			if wanted == nil or wanted[u:type()] then
+				table.insert(out, u)
+			end
+		end
+	end
+	return out
 end
-function GameImpl:unitCount(_type: string): number
-	return 0
+
+-- Level-weighted count of one unit type across every player.
+function GameImpl:unitCount(unitType: string): number
+	local total = 0
+	for _, p in self._playerList do
+		total += p:unitCount(unitType)
+	end
+	return total
 end
-function GameImpl:hasUnitNearby(_tile: number, _range: number, _type: string, _playerId: string?, _inclUC: boolean?): boolean
-	return false
+
+function GameImpl:unitInfo(unitType: string)
+	return self._config:unitInfo(unitType)
 end
-function GameImpl:anyUnitNearby(...): boolean
-	return false
+
+function GameImpl:hasUnitNearby(tile: number, range: number, unitType: string, playerId: string?, includeUnderConstruction: boolean?): boolean
+	return self._unitGrid:hasUnitNearby(tile, range, unitType, playerId, includeUnderConstruction)
 end
-function GameImpl:nearbyUnits(...)
-	return {}
+function GameImpl:anyUnitNearby(tile: number, range: number, types, predicate, playerId: string?, includeUnderConstruction: boolean?): boolean
+	return self._unitGrid:anyUnitNearby(tile, range, types, predicate, playerId, includeUnderConstruction)
 end
+function GameImpl:nearbyUnits(tile: number, range: number, types, predicate, includeUnderConstruction: boolean?)
+	return self._unitGrid:nearbyUnits(tile, range, types, predicate, includeUnderConstruction)
+end
+
 function GameImpl:bumpUnitsVersion()
 	self._unitsVersion += 1
+end
+
+function GameImpl:addUnit(u)
+	self._unitsVersion += 1
+	self._unitGrid:addUnit(u)
+	self._unitMap[u:id()] = u
+end
+
+function GameImpl:removeUnit(u)
+	self._unitsVersion += 1
+	self._unitGrid:removeUnit(u)
+	self._unitMap[u:id()] = nil
+	-- TODO(port): rail network station removal (factories).
+end
+
+function GameImpl:updateUnitTile(u)
+	self._unitGrid:updateUnitCell(u)
+end
+
+function GameImpl:onUnitMoved(u)
+	self:updateUnitTile(u)
+	self:addUpdate(u:toUpdate())
 end
 
 function GameImpl:nations()
@@ -656,6 +723,16 @@ function GameImpl:displayMessage(message: string, messageType: number, playerID:
 		params = params,
 		unitID = unitID,
 		focusPlayerID = if focusPlayerID ~= nil then self:player(focusPlayerID):smallID() else nil,
+	})
+end
+
+function GameImpl:displayIncomingUnit(unitID: number, message: string, messageType: number, playerID: string)
+	self:addUpdate({
+		type = "UnitIncoming",
+		unitID = unitID,
+		message = message,
+		messageType = messageType,
+		playerID = self:player(playerID):smallID(),
 	})
 end
 

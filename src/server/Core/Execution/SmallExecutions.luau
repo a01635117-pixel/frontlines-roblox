@@ -66,6 +66,40 @@ function Retreat:activeDuringSpawnPhase(): boolean
 end
 SmallExecutions.RetreatExecution = Retreat
 
+-- BoatRetreatExecution: turn one of the player's boats around.
+local BoatRetreat = {}
+BoatRetreat.__index = BoatRetreat
+function BoatRetreat.new(player, unitID: number)
+	return setmetatable({ player = player, unitID = unitID, _active = true }, BoatRetreat)
+end
+function BoatRetreat:init() end
+function BoatRetreat:tick()
+	local found = nil
+	for _, u in self.player:units() do
+		if u:id() == self.unitID and u:type() == GameTypes.UnitType.TransportShip then
+			found = u
+			break
+		end
+	end
+	if not found then
+		warn(`Didn't find outgoing boat with id {self.unitID}`)
+		self._active = false
+		return
+	end
+	found:updateTransportShipState({ isRetreating = true })
+	self._active = false
+end
+function BoatRetreat:owner()
+	return self.player
+end
+function BoatRetreat:isActive(): boolean
+	return self._active
+end
+function BoatRetreat:activeDuringSpawnPhase(): boolean
+	return false
+end
+SmallExecutions.BoatRetreatExecution = BoatRetreat
+
 -- NoOpExecution
 local NoOp = {}
 NoOp.__index = NoOp

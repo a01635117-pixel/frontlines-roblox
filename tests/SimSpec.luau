@@ -143,6 +143,10 @@ function SimSpec.run(untilTick: number): string
 			end
 		end
 	end
+	if V.unitsCreated ~= nil and s.tick == V.ticks then
+		local created = game._nextUnitID - 1
+		table.insert(lines, `units created: {created} (upstream {V.unitsCreated}) {if created == V.unitsCreated then "OK" else "MISMATCH"}`)
+	end
 	table.insert(
 		lines,
 		string.format(

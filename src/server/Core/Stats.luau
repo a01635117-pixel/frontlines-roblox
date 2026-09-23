@@ -98,8 +98,22 @@ function Stats:attacksSent(player): number
 	return p.attacks[Stats.ATTACK_INDEX_SENT] or 0
 end
 
+-- MIRV count feeds the MIRV price (Config.unitInfo). TODO(port): MIRVs.
+function Stats:numMirvsLaunched(): number
+	return self._mirvsLaunched or 0
+end
+
 -- Recorded upstream for the results screen; no simulation effect.
 local function noop() end
+Stats.boatSendTroops = noop
+Stats.boatArriveTroops = noop
+Stats.boatDestroyTroops = noop
+Stats.boatCapturedTroops = noop
+Stats.boatDestroyTrade = noop
+Stats.unitBuild = noop
+Stats.unitCapture = noop
+Stats.unitLose = noop
+Stats.unitDestroy = noop
 Stats.goldWork = noop
 Stats.goldWar = noop
 Stats.recordTickSample = noop

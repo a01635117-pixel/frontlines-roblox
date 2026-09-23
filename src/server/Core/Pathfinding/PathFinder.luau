@@ -170,6 +170,11 @@ local function tileStepperConfig(game)
 	}
 end
 
+-- Upstream PathFinding.Water(game): a fresh stepper over the shared chain.
+function PathFinder.Water(game)
+	return Stepper.new(sharedWaterChain(game), tileStepperConfig(game))
+end
+
 -- WaterPathFinder ---------------------------------------------------------------------
 
 local WaterPathFinder = {}

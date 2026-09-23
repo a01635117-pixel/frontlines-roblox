@@ -3,6 +3,7 @@
 
 local Shared = game:GetService("ReplicatedStorage").Shared
 local GameMap = require(Shared.GameMap)
+local Util = require(Shared.Util)
 
 local ExecUtil = {}
 
@@ -42,6 +43,42 @@ function ExecUtil.closestTile(gm, refs, tile: number): (number?, number)
 		end
 	end
 	return minRef, minDistance
+end
+
+-- Closest pair between two tile lists by a sweep over x-sorted copies
+-- (upstream closestTwoTiles; stable sort like JS). Returns x, y or nil.
+function ExecUtil.closestTwoTiles(gm, xs: { number }, ys: { number }): (number?, number?)
+	local w = gm:width()
+	local byX = function(a: number, b: number): number
+		return (a % w) - (b % w)
+	end
+	local xSorted = Util.sort(table.clone(xs), byX)
+	local ySorted = Util.sort(table.clone(ys), byX)
+	if #xSorted == 0 or #ySorted == 0 then
+		return nil, nil
+	end
+	local i, j = 1, 1
+	local minDistance = math.huge
+	local rx, ry = xSorted[1], ySorted[1]
+	while i <= #xSorted and j <= #ySorted do
+		local cx, cy = xSorted[i], ySorted[j]
+		local cxX, cyX = cx % w, cy % w
+		local distance = math.abs(cxX - cyX) + math.abs(cx // w - cy // w)
+		if distance < minDistance then
+			minDistance = distance
+			rx, ry = cx, cy
+		end
+		if i == #xSorted then
+			j += 1
+		elseif j == #ySorted then
+			i += 1
+		elseif cxX < cyX then
+			i += 1
+		else
+			j += 1
+		end
+	end
+	return rx, ry
 end
 
 -- Upstream Util.getMode over an insertion-ordered map (PlayerImpl.OrderedMap):

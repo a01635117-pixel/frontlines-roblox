@@ -13,9 +13,11 @@ local JSSet = require(Shared.JSSet)
 local PseudoRandom = require(Shared.PseudoRandom)
 local Util = require(Shared.Util)
 local AttackImpl = require(script.Parent.AttackImpl)
+local TransportShipUtils = require(script.Parent.TransportShipUtils)
 local GameTypes = require(script.Parent.GameTypes)
 
 local PlayerType = GameTypes.PlayerType
+local UnitType = GameTypes.UnitType
 local Relation = GameTypes.Relation
 local ColoredTeams = GameTypes.ColoredTeams
 local toInt, within, simpleHash = Util.toInt, Util.within, Util.simpleHash
@@ -101,8 +103,9 @@ function PlayerImpl.new(mg, smallID: number, playerInfo, startTroops: number, te
 		_tiles = JSSet.new(),
 		_borderTiles = JSSet.new(),
 
-		_units = {}, -- TODO(port): units (cities, ports, ships, nukes...)
+		_units = {},
 		_myUnitsVersion = 0,
+		_numUnitsConstructed = {}, -- unitType -> count
 
 		pastOutgoingAllianceRequests = {},
 		_expiredAlliances = {},
@@ -167,22 +170,28 @@ function PlayerImpl:__tostring(): string
 end
 
 -- Units -------------------------------------------------------------------------
--- TODO(port): units. Until then every player owns none.
 
-function PlayerImpl:units(...: string): { any }
+-- units() -> live list; units(type, ...) / units({types}) -> fresh filtered copy.
+function PlayerImpl:units(...: any): { any }
 	local n = select("#", ...)
 	if n == 0 then
 		return self._units
 	end
 	local wanted = {}
-	for i = 1, n do
-		local t = select(i, ...)
-		if type(t) == "table" then
-			for _, x in t do
-				wanted[x] = true
+	local first = ...
+	if type(first) == "table" then
+		if #first == 0 then
+			return self._units
+		end
+		for _, x in first do
+			wanted[x] = true
+		end
+	else
+		for i = 1, n do
+			local t = select(i, ...)
+			if t ~= nil then
+				wanted[t] = true
 			end
-		elseif t ~= nil then
-			wanted[t] = true
 		end
 	end
 	local out = {}
@@ -193,17 +202,92 @@ function PlayerImpl:units(...: string): { any }
 	end
 	return out
 end
-function PlayerImpl:unitCount(_type: string): number
-	return 0
+
+-- Units built, including those still under construction.
+function PlayerImpl:unitsConstructed(unitType: string): number
+	return self._numUnitsConstructed[unitType] or 0
 end
-function PlayerImpl:unitsConstructed(_type: string): number
-	return 0
+
+-- Level-weighted count of owned units of a type.
+function PlayerImpl:unitCount(unitType: string): number
+	local total = 0
+	for _, u in self._units do
+		if u:type() == unitType then
+			total += u:level()
+		end
+	end
+	return total
 end
-function PlayerImpl:unitsOwned(_type: string): number
-	return 0
+
+-- Owned units of a type; under construction counts 1, else its level.
+function PlayerImpl:unitsOwned(unitType: string): number
+	local total = 0
+	for _, u in self._units do
+		if u:type() == unitType then
+			total += if u:isUnderConstruction() then 1 else u:level()
+		end
+	end
+	return total
 end
-function PlayerImpl:captureUnit(_unit)
-	error("TODO(port): captureUnit")
+
+function PlayerImpl:captureUnit(unit)
+	if unit:owner() == self then
+		error(`Cannot capture unit, {self} already owns {unit}`)
+	end
+	unit:setOwner(self)
+end
+
+function PlayerImpl:buildUnit(unitType: string, spawnTile: number, params)
+	local mg = self.mg
+	if mg:config():isUnitDisabled(unitType) then
+		error(`Attempted to build disabled unit {unitType} at tile {spawnTile} by player {self:name()}`)
+	end
+	params = params or {}
+	local cost = mg:unitInfo(unitType).cost(mg, self)
+	local UnitImpl = require(script.Parent.UnitImpl)
+	local b = UnitImpl.new(unitType, mg, spawnTile, mg:nextUnitID(), self, params)
+	table.insert(self._units, b)
+	self._myUnitsVersion += 1
+	self._numUnitsConstructed[unitType] = (self._numUnitsConstructed[unitType] or 0) + 1
+	self:removeGold(cost)
+	self:removeTroops(params.troops or 0)
+	mg:addUpdate(b:toUpdate())
+	mg:addUnit(b)
+	return b
+end
+
+function PlayerImpl:_canBuildUnitType(unitType: string, knownCost: number?): boolean
+	local mg = self.mg
+	if mg:config():isUnitDisabled(unitType) then
+		return false
+	end
+	local cost = knownCost or mg:unitInfo(unitType).cost(mg, self)
+	if self._gold < cost then
+		return false
+	end
+	if unitType ~= UnitType.MIRVWarhead and not self:isAlive() then
+		return false
+	end
+	return true
+end
+
+function PlayerImpl:_canSpawnUnitType(unitType: string, targetTile: number, _validTiles)
+	if unitType == UnitType.TransportShip then
+		return TransportShipUtils.canBuildTransportShip(self.mg, self, targetTile)
+	elseif unitType == UnitType.MIRVWarhead or unitType == UnitType.Shell or unitType == UnitType.SAMMissile then
+		return targetTile
+	end
+	-- TODO(port): nukeSpawn, portSpawn, warshipSpawn, tradeShipSpawn,
+	-- landBasedUnitSpawn, landBasedStructureSpawn.
+	error(`TODO(port): spawning {unitType}`)
+end
+
+-- Spawn tile for a unit of this type aimed at targetTile, or false.
+function PlayerImpl:canBuild(unitType: string, targetTile: number, validTiles)
+	if not self:_canBuildUnitType(unitType) then
+		return false
+	end
+	return self:_canSpawnUnitType(unitType, targetTile, validTiles)
 end
 
 -- Territory ---------------------------------------------------------------------
@@ -930,9 +1014,8 @@ function PlayerImpl:canAttack(tile: number): boolean
 	return false
 end
 
-function PlayerImpl:bestTransportShipSpawn(_targetTile: number)
-	-- TODO(port): TransportShipUtils.bestShoreDeploymentSource (boats).
-	return false
+function PlayerImpl:bestTransportShipSpawn(targetTile: number)
+	return TransportShipUtils.bestShoreDeploymentSource(self.mg, self, targetTile) or false
 end
 
 return PlayerImpl
