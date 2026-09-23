@@ -96,8 +96,8 @@ local runner = GameRunner.create({
 		infiniteGold = false,
 		infiniteTroops = false,
 		instantBuild = false,
-		-- Not ported yet: rail network (factories), warships.
-		disabledUnits = { "Factory", "Warship" },
+		-- Not ported yet: rail network (factories).
+		disabledUnits = { "Factory" },
 		nations = "disabled", -- TODO(port): nations
 	},
 	players = players,
@@ -199,7 +199,7 @@ local function fullState(forPlayer: Player)
 			local list = {}
 			for _, u in mg:units() do
 				local up = u:toUpdate()
-				table.insert(list, { id = up.id, unitType = up.unitType, ownerID = up.ownerID, pos = up.pos, troops = up.troops, isActive = true, isRetreating = up.isRetreating, level = up.level, underConstruction = up.underConstruction, markedForDeletion = up.markedForDeletion ~= false, targetTile = up.targetTile, plan = mg:motionPlan(up.id) })
+				table.insert(list, { id = up.id, unitType = up.unitType, ownerID = up.ownerID, pos = up.pos, troops = up.troops, isActive = true, isRetreating = up.isRetreating, level = up.level, underConstruction = up.underConstruction, markedForDeletion = up.markedForDeletion ~= false, targetTile = up.targetTile, plan = mg:motionPlan(up.id), health = up.health, maxHealth = up.maxHealth })
 			end
 			return list
 		end)(),
@@ -383,6 +383,20 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 			local amount = if unitType == "Atom Bomb" and intent.amount == 5 then 5 else nil
 			table.insert(pending, { type = "build_unit", clientID = clientID, unit = unitType, tile = tile, amount = amount })
 		end
+	elseif t == "move_warship" then
+		-- Warship selection: move own warships' patrol point (MoveWarshipExecution
+		-- checks ownership and water connectivity).
+		local ids = intent.unitIds
+		if type(ids) ~= "table" or #ids == 0 or #ids > 100 or not isInt(intent.tile) or not mg:isValidRef(intent.tile) then
+			return
+		end
+		local clean = {}
+		for _, id in ids do
+			if isInt(id) then
+				table.insert(clean, id)
+			end
+		end
+		table.insert(pending, { type = "move_warship", clientID = clientID, unitIds = clean, tile = intent.tile })
 	elseif t == "delete_at" then
 		if isInt(intent.tile) and mg:isValidRef(intent.tile) then
 			local u = deletableAt(me, intent.tile)
@@ -505,6 +519,8 @@ local function handleUpdates(updates)
 				markedForDeletion = u.markedForDeletion ~= false,
 				reachedTarget = u.reachedTarget,
 				targetTile = u.targetTile,
+				health = u.health,
+				maxHealth = u.maxHealth,
 				plan = if u.isActive then plan else nil,
 			}
 		end

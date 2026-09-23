@@ -299,9 +299,25 @@ function PlayerImpl:_canSpawnUnitType(unitType: string, targetTile: number, vali
 		or unitType == UnitType.Factory
 	then
 		return self:landBasedStructureSpawn(targetTile, validTiles)
+	elseif unitType == UnitType.Warship then
+		return self:warshipSpawn(targetTile)
 	end
-	-- TODO(port): warshipSpawn.
-	error(`TODO(port): spawning {unitType}`)
+	error(`unknown unit type {unitType}`)
+end
+
+-- Warships launch from the closest built port on the same water body.
+function PlayerImpl:warshipSpawn(tile: number)
+	local mg = self.mg
+	if not mg:isWater(tile) then
+		return false
+	end
+	local tileComponent = mg:getWaterComponent(tile)
+	local bestPort = Util.findClosestBy(self:units(UnitType.Port), function(port)
+		return mg:manhattanDist(port:tile(), tile)
+	end, function(port)
+		return port:isActive() and not port:isUnderConstruction() and tileComponent ~= nil and mg:hasWaterComponent(port:tile(), tileComponent)
+	end)
+	return if bestPort then bestPort:tile() else false
 end
 
 -- Closest ready silo (active, loaded, built) to launch from, or false.
@@ -490,11 +506,6 @@ end
 -- MAX_UPGRADE_AMOUNT (upstream Game.ts): longest bulk-upgrade price table.
 local MAX_UPGRADE_AMOUNT = 50
 
--- Unit types whose spawn rules are not ported yet: reported as unbuildable.
-local NOT_YET_SPAWNABLE = {
-	[UnitType.Warship] = true,
-}
-
 -- What can be built / upgraded at `tile` (upstream buildableUnits).
 -- TODO(port): overlappingRailroads / ghostRailPaths (rail network).
 function PlayerImpl:buildableUnits(tile: number?, units: { string }?)
@@ -522,11 +533,7 @@ function PlayerImpl:buildableUnits(tile: number?, units: { string }?)
 					canUpgrade = existing:id()
 				end
 			end
-			if NOT_YET_SPAWNABLE[u] then
-				canBuild = false -- TODO(port): warships
-			else
-				canBuild = self:_canSpawnUnitType(u, tile, validTiles)
-			end
+			canBuild = self:_canSpawnUnitType(u, tile, validTiles)
 		end
 		local upgradeCosts = nil
 		if canUpgrade ~= false then

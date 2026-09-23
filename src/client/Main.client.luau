@@ -374,6 +374,9 @@ end)
 
 -- Input ----------------------------------------------------------------------------
 
+local WARSHIP_SELECTION_RADIUS = 10
+local selectedWarship: number? = nil
+
 camera.onClick = function(p: Vector2)
 	if gameOver or mySmallID == nil then
 		return
@@ -391,11 +394,35 @@ camera.onClick = function(p: Vector2)
 		end
 		return
 	end
+	-- Warship select / move (WarshipSelectionController): water clicks only.
+	if gameMap:isWater(tile) then
+		if selectedWarship and unitLayer:isActiveUnit(selectedWarship) then
+			Net.Intent:FireServer({ type = "move_warship", unitIds = { selectedWarship }, tile = tile })
+			selectedWarship = nil
+			unitLayer:setSelected(nil)
+			return
+		end
+		local near = unitLayer:warshipsNear(mySmallID, tile, WARSHIP_SELECTION_RADIUS)
+		if near[1] then
+			selectedWarship = near[1]
+			unitLayer:setSelected(selectedWarship)
+		end
+		return
+	end
+	if selectedWarship then
+		selectedWarship = nil
+		unitLayer:setSelected(nil)
+	end
 	-- The server decides land attack vs boat, exactly like the upstream client.
 	Net.Intent:FireServer({ type = "click", tile = tile, ratio = controlPanel.ratio })
 end
 
 camera.onRightClick = function(p: Vector2)
+	if selectedWarship then
+		selectedWarship = nil
+		unitLayer:setSelected(nil)
+		return
+	end
 	local tile = tileAtScreen(p)
 	if tile ~= nil and not gameOver then
 		buildMenu:openContextMenu(p, tile)

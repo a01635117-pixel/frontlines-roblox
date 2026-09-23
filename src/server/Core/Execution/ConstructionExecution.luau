@@ -114,7 +114,8 @@ function ConstructionExecution:_completeConstruction()
 		local MirvExecution = require(script.Parent.MirvExecution)
 		mg:addExecution(MirvExecution.new(self.player, self.tile))
 	elseif t == UnitType.Warship then
-		warn("TODO(port): warships") -- WarshipExecution
+		local WarshipExecution = require(script.Parent.WarshipExecution).WarshipExecution
+		mg:addExecution(WarshipExecution.new({ owner = self.player, patrolTile = self.tile }))
 	elseif t == UnitType.SAMLauncher then
 		local SAMExecutions = require(script.Parent.SAMExecutions)
 		mg:addExecution(SAMExecutions.SAMLauncherExecution.new(self.player, nil, self.structure))

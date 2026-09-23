@@ -8,7 +8,8 @@
 --   Stats(buf)         per-player tiles / troops / gold (every few ticks)
 --   Names(buf)         name placements (NameBoxCalculator), when recomputed
 --   Units(list)        unit changes this tick: { id, unitType, ownerID, pos, troops, isActive, isRetreating,
---                      level, underConstruction, markedForDeletion, reachedTarget, targetTile }
+--                      level, underConstruction, markedForDeletion, reachedTarget, targetTile,
+--                      health, maxHealth, plan? }
 --   Me(info)           private: { costs = { [unitType] = gold }, disabled = { [unitType] = true }, maxTroops,
 --                      troopRate (per s),
 --                      attackingTroops, attacking, allied, bordering? = { smallID }, hasCoast? }
@@ -19,6 +20,7 @@
 --                      | { type = "cancel_attack", attackID }
 --                      | { type = "place", unit, tile }   (build, or upgrade a structure in range)
 --                      | { type = "delete_at", tile }     (closest own structure within 5 tiles)
+--                      | { type = "move_warship", unitIds, tile }
 --   Query(q) -> result  RemoteFunction: { tile } -> { units = { { unit, cost, canBuild, canUpgrade } }, deleteUnit }
 
 local RunService = game:GetService("RunService")

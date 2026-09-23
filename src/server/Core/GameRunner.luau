@@ -65,6 +65,9 @@ function Executor:createExec(intent)
 		return SmallExecutions.BoatRetreatExecution.new(player, intent.unitID)
 	elseif t == "build_unit" then
 		return ConstructionExecution.new(player, intent.unit, intent.tile, intent.rocketDirectionUp, intent.amount)
+	elseif t == "move_warship" then
+		local MoveWarshipExecution = require(script.Parent.Execution.WarshipExecution).MoveWarshipExecution
+		return MoveWarshipExecution.new(player, intent.unitIds, intent.tile)
 	elseif t == "upgrade_structure" then
 		return StructureExecutions.UpgradeStructureExecution.new(player, intent.unitId, intent.amount)
 	elseif t == "delete_unit" then

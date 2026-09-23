@@ -4,7 +4,8 @@
 -- Nukes fly on their motion plan (Parabola.motionPath replayed against the
 -- estimated tick), SAM missiles and the MIRV carrier are interpolated, and
 -- detonations play a flash + shockwave (render-settings nukeShockwave*).
--- TODO(port): warships, trains; incoming-nuke trajectory telegraph.
+-- Warships show their health when damaged and a ring when selected.
+-- TODO(port): trains; incoming-nuke trajectory telegraph.
 
 local Parabola = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Parabola"))
 
@@ -119,6 +120,48 @@ local function makeWarhead(parent: Instance, id: number)
 	return f
 end
 
+local function makeWarship(parent: Instance, id: number)
+	local l = Icons.label(parent, "warship", 24, { white = true })
+	l.Name = `Warship{id}`
+	l.AnchorPoint = Vector2.new(0.5, 0.5)
+	l.ZIndex = 7
+	-- Health bar under the ship (upstream BarPass), shown when damaged.
+	local bar = Instance.new("Frame")
+	bar.Name = "Health"
+	bar.AnchorPoint = Vector2.new(0.5, 0)
+	bar.Position = UDim2.new(0.5, 0, 1, 1)
+	bar.Size = UDim2.new(1, 0, 0, 3)
+	bar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	bar.BorderSizePixel = 0
+	bar.Visible = false
+	bar.ZIndex = 7
+	bar.Parent = l
+	local fill = Instance.new("Frame")
+	fill.Name = "Fill"
+	fill.Size = UDim2.fromScale(1, 1)
+	fill.BorderSizePixel = 0
+	fill.ZIndex = 8
+	fill.Parent = bar
+	-- Selection ring.
+	local ring = Instance.new("Frame")
+	ring.Name = "Selected"
+	ring.AnchorPoint = Vector2.new(0.5, 0.5)
+	ring.Position = UDim2.fromScale(0.5, 0.5)
+	ring.Size = UDim2.fromScale(1.7, 1.7)
+	ring.BackgroundTransparency = 1
+	ring.Visible = false
+	ring.ZIndex = 6
+	local rc = Instance.new("UICorner")
+	rc.CornerRadius = UDim.new(0.5, 0)
+	rc.Parent = ring
+	local rs = Instance.new("UIStroke")
+	rs.Color = Color3.new(1, 1, 1)
+	rs.Thickness = 2
+	rs.Parent = ring
+	ring.Parent = l
+	return l, bar, fill, ring
+end
+
 local function makeStructure(parent: Instance, id: number, icon: string)
 	local frame = Instance.new("Frame")
 	frame.Name = `Structure{id}`
@@ -170,15 +213,18 @@ function UnitLayer:apply(u)
 		self:_applyPlanned(e, u)
 		return
 	end
-	local isMissile = u.unitType == "SAMMissile" or u.unitType == "MIRV"
-	if u.unitType ~= "Transport" and u.unitType ~= "Trade Ship" and not isMissile then
-		return -- TODO(port): warships, trains
+	local isMissile = u.unitType == "SAMMissile" or u.unitType == "MIRV" or u.unitType == "Shell"
+	local isWarship = u.unitType == "Warship"
+	if u.unitType ~= "Transport" and u.unitType ~= "Trade Ship" and not isMissile and not isWarship then
+		return -- TODO(port): trains
 	end
 	local now = os.clock()
 	if e == nil then
-		local frame, label
+		local frame, label, hbar, hfill, ring
 		if u.unitType == "MIRV" then
 			frame = makeNuke(self.container, u.id, "mirv")
+		elseif isWarship then
+			frame, hbar, hfill, ring = makeWarship(self.container, u.id)
 		else
 			frame, label = makeShip(self.container, u.id, u.unitType == "Transport")
 		end
@@ -189,8 +235,12 @@ function UnitLayer:apply(u)
 			to = u.pos,
 			t0 = now,
 			small = u.unitType == "Trade Ship",
-			tiny = u.unitType == "SAMMissile",
+			tiny = u.unitType == "SAMMissile" or u.unitType == "Shell",
 			nuke = u.unitType == "MIRV",
+			warship = isWarship,
+			hbar = hbar,
+			hfill = hfill,
+			ring = ring,
 			unitType = u.unitType,
 		}
 		self.units[u.id] = e
@@ -200,10 +250,22 @@ function UnitLayer:apply(u)
 		e.t0 = now
 	end
 	e.ownerID = u.ownerID
+	e.pos = u.pos
 	if e.nuke then
 		return
 	end
-	local color = if e.tiny then Color3.new(1, 1, 1) else self.colors[u.ownerID] or Color3.new(1, 1, 1)
+	if e.warship then
+		local c = self.colors[u.ownerID] or Color3.new(1, 1, 1)
+		e.frame.ImageColor3 = c:Lerp(Color3.new(1, 1, 1), 0.25)
+		local hp, max = u.health or 1, u.maxHealth or 1
+		local frac = math.clamp(hp / math.max(1, max), 0, 1)
+		e.hbar.Visible = frac < 1
+		e.hfill.Size = UDim2.fromScale(frac, 1)
+		e.hfill.BackgroundColor3 = Color3.fromRGB(230, 60, 50):Lerp(Color3.fromRGB(80, 210, 90), frac)
+		e.ring.Visible = self.selected == u.id
+		return
+	end
+	local color = if e.tiny then (if u.unitType == "Shell" then Color3.fromRGB(255, 170, 60) else Color3.new(1, 1, 1)) else self.colors[u.ownerID] or Color3.new(1, 1, 1)
 	e.frame.BackgroundColor3 = if u.isRetreating then color:Lerp(Color3.new(0.5, 0.5, 0.5), 0.6) else color
 	if e.label then
 		e.label.Text = Format.renderTroops(u.troops or 0)
@@ -321,6 +383,42 @@ function UnitLayer:hasUnit(ownerID: number, unitType: string): boolean
 	return false
 end
 
+-- Own warships within manhattan `radius` of a tile, nearest first
+-- (WarshipSelectionController.findWarshipsNearCell).
+function UnitLayer:warshipsNear(ownerID: number, tile: number, radius: number): { number }
+	local map = self.map
+	local found = {}
+	for id, e in self.units do
+		if e.warship and e.ownerID == ownerID and e.pos then
+			local d = math.abs(map:x(e.pos) - map:x(tile)) + math.abs(map:y(e.pos) - map:y(tile))
+			if d <= radius then
+				table.insert(found, { id = id, d = d })
+			end
+		end
+	end
+	table.sort(found, function(a, b)
+		return a.d < b.d
+	end)
+	local ids = {}
+	for i, f in found do
+		ids[i] = f.id
+	end
+	return ids
+end
+
+function UnitLayer:setSelected(id: number?)
+	self.selected = id
+	for uid, e in self.units do
+		if e.warship then
+			e.ring.Visible = uid == id
+		end
+	end
+end
+
+function UnitLayer:isActiveUnit(id: number): boolean
+	return self.units[id] ~= nil
+end
+
 -- Sum of levels of a player's structures of one type (upstream totalUnitLevels).
 function UnitLayer:totalLevels(ownerID: number, unitType: string): number
 	local n = 0
@@ -370,7 +468,11 @@ function UnitLayer:render()
 		local fx, fy = map:x(e.from), map:y(e.from)
 		local tx, ty = map:x(e.to), map:y(e.to)
 		local p = camera:screenPos(fx + (tx - fx) * a, fy + (ty - fy) * a)
-		local s = if e.tiny then math.max(4, size * 0.35) elseif e.small then size * 0.6 elseif e.nuke then math.clamp(camera.zoom * 3, 14, 30) else size
+		local s = if e.tiny then math.max(4, size * 0.35)
+			elseif e.small then size * 0.6
+			elseif e.nuke then math.clamp(camera.zoom * 3, 14, 30)
+			elseif e.warship then math.clamp(camera.zoom * 3.2, 14, 34)
+			else size
 		e.frame.Position = UDim2.fromOffset(p.X, p.Y)
 		e.frame.Size = UDim2.fromOffset(s, s)
 		if e.label then

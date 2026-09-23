@@ -41,6 +41,11 @@ end
 local UnitImpl = {}
 UnitImpl.__index = UnitImpl
 
+-- Passed as a field value to updateWarshipState to set it to undefined
+-- (JS spreads an explicit undefined; a Luau nil would mean "unchanged").
+local NONE = table.freeze({})
+UnitImpl.NONE = NONE
+
 function UnitImpl.new(unitType: string, mg, tile: number, id: number, owner, params)
 	params = params or {}
 	local self = setmetatable({
@@ -146,6 +151,7 @@ function UnitImpl:toUpdate()
 		targetTile = self._targetTile,
 		isRetreating = if self._transportShipState then self._transportShipState.isRetreating else nil,
 		health = if self:hasHealth() then self._health else nil,
+		maxHealth = if self:hasHealth() then self:maxHealth() else nil, -- replication only
 		underConstruction = self._underConstruction,
 		level = self._level,
 		markedForDeletion = self._deletionAt or false,
@@ -336,9 +342,15 @@ function UnitImpl:updateWarshipState(update)
 	if update.isInCombat then
 		self:_markInCombat()
 	end
-	local state = if update.state ~= nil then update.state else ws.state
-	local patrolTile = if update.patrolTile ~= nil then update.patrolTile else ws.patrolTile
-	local retreatPort = if update.retreatPort ~= nil then update.retreatPort else ws.retreatPort
+	local function pick(v, old)
+		if v == NONE then
+			return nil
+		end
+		return if v ~= nil then v else old
+	end
+	local state = pick(update.state, ws.state)
+	local patrolTile = pick(update.patrolTile, ws.patrolTile)
+	local retreatPort = pick(update.retreatPort, ws.retreatPort)
 	if state == ws.state and patrolTile == ws.patrolTile and retreatPort == ws.retreatPort then
 		return
 	end
