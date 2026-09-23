@@ -117,6 +117,9 @@ function PlayerImpl.new(mg, smallID: number, playerInfo, startTroops: number, te
 		_relations = OrderedMap.new(), -- Player -> number
 
 		_lastDeleteUnitTick = -1,
+		outgoingEmojis_ = {}, -- EmojiMessage list
+		outgoingQuickChats_ = {}, -- recipient smallID -> tick
+		sentDonations = {}, -- { recipient, tick }
 		_lastEmbargoAllTick = -1,
 
 		_incomingAttacks = {},
@@ -978,6 +981,113 @@ end
 
 -- Cooldown-gated actions -----------------------------------------------------------------
 -- TODO(port): emoji, quick chat and donations.
+
+-- Emoji / quick chat / donations ----------------------------------------------------
+-- recipient may be GameTypes.AllPlayers ("AllPlayers").
+
+function PlayerImpl:sendEmoji(recipient, emoji: string)
+	if recipient == self then
+		error(`Cannot send emoji to oneself: {self}`)
+	end
+	local msg = {
+		message = emoji,
+		senderID = self:smallID(),
+		recipientID = if recipient == GameTypes.AllPlayers then recipient else recipient:smallID(),
+		createdAt = self.mg:ticks(),
+	}
+	table.insert(self.outgoingEmojis_, msg)
+	self.mg:sendEmojiUpdate(msg)
+end
+
+function PlayerImpl:outgoingEmojis()
+	local out = {}
+	for _, e in self.outgoingEmojis_ do
+		if self.mg:ticks() - e.createdAt < self.mg:config():emojiMessageDuration() then
+			table.insert(out, e)
+		end
+	end
+	Util.sort(out, function(a, b)
+		return b.createdAt - a.createdAt
+	end)
+	return out
+end
+
+function PlayerImpl:canSendEmoji(recipient): boolean
+	if recipient == self then
+		return false
+	end
+	local recipientID = if recipient == GameTypes.AllPlayers then recipient else recipient:smallID()
+	for _, msg in self.outgoingEmojis_ do
+		if msg.recipientID == recipientID and self.mg:ticks() - msg.createdAt < self.mg:config():emojiMessageCooldown() then
+			return false
+		end
+	end
+	return true
+end
+
+function PlayerImpl:canSendQuickChat(recipient): boolean
+	if recipient == self then
+		return false
+	end
+	local last = self.outgoingQuickChats_[recipient:smallID()]
+	return last == nil or self.mg:ticks() - last >= self.mg:config():quickChatCooldown()
+end
+
+function PlayerImpl:recordQuickChat(recipient)
+	self.outgoingQuickChats_[recipient:smallID()] = self.mg:ticks()
+end
+
+function PlayerImpl:_canDonate(recipient, allowedForHumans: boolean): boolean
+	if recipient == self then
+		return false
+	end
+	if not self:isAlive() or not recipient:isAlive() or not self:isFriendly(recipient) then
+		return false
+	end
+	if recipient:type() == PlayerType.Human and not allowedForHumans then
+		return false
+	end
+	for _, d in self.sentDonations do
+		if d.recipient == recipient and self.mg:ticks() - d.tick < self.mg:config():donateCooldown() then
+			return false
+		end
+	end
+	return true
+end
+function PlayerImpl:canDonateGold(recipient): boolean
+	return self:_canDonate(recipient, self.mg:config():donateGold())
+end
+function PlayerImpl:canDonateTroops(recipient): boolean
+	return self:_canDonate(recipient, self.mg:config():donateTroops())
+end
+
+function PlayerImpl:donateTroops(recipient, troops: number): boolean
+	if recipient == self or troops <= 0 then
+		return false
+	end
+	local removed = self:removeTroops(troops)
+	if removed == 0 then
+		return false
+	end
+	recipient:addTroops(removed)
+	table.insert(self.sentDonations, { recipient = recipient, tick = self.mg:ticks() })
+	self.mg:addUpdate({ type = "DonateEvent", donationType = "troops", senderId = self:id(), recipientId = recipient:id(), amount = removed })
+	return true
+end
+
+function PlayerImpl:donateGold(recipient, gold: number): boolean
+	if recipient == self or gold <= 0 then
+		return false
+	end
+	local removed = self:removeGold(gold)
+	if removed == 0 then
+		return false
+	end
+	recipient:addGold(removed)
+	table.insert(self.sentDonations, { recipient = recipient, tick = self.mg:ticks() })
+	self.mg:addUpdate({ type = "DonateEvent", donationType = "gold", senderId = self:id(), recipientId = recipient:id(), amount = removed })
+	return true
+end
 
 function PlayerImpl:canDeleteUnit(): boolean
 	return self.mg:ticks() - self._lastDeleteUnitTick >= self.mg:config():deleteUnitCooldown()

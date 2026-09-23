@@ -77,8 +77,9 @@ function TribeExecution:_acceptAllAllianceRequests()
 		if not alliance:onlyOneAgreedToExtend() then
 			continue
 		end
-		-- TODO(port): AllianceExtensionExecution
-		error("TODO(port): AllianceExtensionExecution")
+		local human = alliance:other(self._tribe)
+		local AllianceExtensionExecution = require(script.Parent.SocialExecutions).AllianceExtensionExecution
+		self.mg:addExecution(AllianceExtensionExecution.new(self._tribe, human:id()))
 	end
 end
 

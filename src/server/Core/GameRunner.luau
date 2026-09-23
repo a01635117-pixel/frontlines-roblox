@@ -73,8 +73,31 @@ function Executor:createExec(intent)
 	elseif t == "delete_unit" then
 		return StructureExecutions.DeleteUnitExecution.new(player, intent.unitId)
 	end
-	-- TODO(port): alliances, targeting, emoji, donations, embargo,
-	-- quick chat, disconnect marking, pause, move warship.
+	local Social = require(script.Parent.Execution.SocialExecutions)
+	if t == "allianceRequest" then
+		return Social.AllianceRequestExecution.new(player, intent.recipient)
+	elseif t == "allianceReject" then
+		return Social.AllianceRejectExecution.new(intent.requestor, player)
+	elseif t == "breakAlliance" then
+		return Social.BreakAllianceExecution.new(player, intent.recipient)
+	elseif t == "allianceExtension" then
+		return Social.AllianceExtensionExecution.new(player, intent.recipient)
+	elseif t == "targetPlayer" then
+		return Social.TargetPlayerExecution.new(player, intent.target)
+	elseif t == "emoji" then
+		return Social.EmojiExecution.new(player, intent.recipient, intent.emoji)
+	elseif t == "donate_troops" then
+		return Social.DonateTroopsExecution.new(player, intent.recipient, intent.troops)
+	elseif t == "donate_gold" then
+		return Social.DonateGoldExecution.new(player, intent.recipient, intent.gold)
+	elseif t == "embargo" then
+		return Social.EmbargoExecution.new(player, intent.targetID, intent.action)
+	elseif t == "embargo_all" then
+		return Social.EmbargoAllExecution.new(player, intent.action)
+	elseif t == "quick_chat" then
+		return Social.QuickChatExecution.new(player, intent.recipient, intent.quickChatKey, intent.target)
+	end
+	-- TODO(port): disconnect marking, pause.
 	warn(`TODO(port): intent type {t}`)
 	return SmallExecutions.NoOpExecution.new()
 end

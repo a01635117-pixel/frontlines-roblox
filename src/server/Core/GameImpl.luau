@@ -17,12 +17,24 @@ local PlayerImpl = require(script.Parent.PlayerImpl)
 local Stats = require(script.Parent.Stats)
 local WaterManager = require(script.Parent.Pathfinding.WaterManager)
 local UnitGrid = require(script.Parent.UnitGrid)
+local AllianceImpl = require(script.Parent.AllianceImpl)
 
 local PlayerType = GameTypes.PlayerType
 local GameMode = GameTypes.GameMode
 local ColoredTeams = GameTypes.ColoredTeams
 local MessageType = GameTypes.MessageType
 local UnitType = GameTypes.UnitType
+
+-- Copy of list without item (JS filter(x => x !== item)).
+local function without(list, item)
+	local out = {}
+	for _, v in list do
+		if v ~= item then
+			table.insert(out, v)
+		end
+	end
+	return out
+end
 
 local TerraNullius = {}
 TerraNullius.__index = TerraNullius
@@ -55,7 +67,7 @@ function GameImpl.new(humans, nations, map, miniGameMap, config, teamGameSpawnAr
 		_playerList = {}, -- insertion order
 		_playersBySmallID = {},
 		_terraNullius = TerraNullius.new(),
-		allianceRequests = {}, -- TODO(port): alliance requests
+		allianceRequests = {}, -- AllianceRequestImpl list (pending)
 		_nextPlayerID = 1,
 		_nextUnitID = 1,
 		_updates = {},
@@ -328,8 +340,70 @@ end
 
 -- Alliances -------------------------------------------------------------------------
 
-function GameImpl:createAllianceRequest(_requestor, _recipient)
-	error("TODO(port): alliance requests")
+function GameImpl:createAllianceRequest(requestor, recipient)
+	if requestor:isAlliedWith(recipient) then
+		return nil -- already allied
+	end
+	for _, ar in recipient:incomingAllianceRequests() do
+		if ar:requestor() == requestor then
+			return nil -- duplicate
+		end
+	end
+	for _, ar in requestor:incomingAllianceRequests() do
+		if ar:requestor() == recipient then
+			-- Corresponding requests: accept instead.
+			ar:accept()
+			return nil
+		end
+	end
+	local ar = AllianceImpl.AllianceRequestImpl.new(requestor, recipient, self._ticks, self)
+	table.insert(self.allianceRequests, ar)
+	self:addUpdate(ar:toUpdate())
+	return ar
+end
+
+function GameImpl:acceptAllianceRequest(request)
+	self.allianceRequests = without(self.allianceRequests, request)
+	local requestor, recipient = request:requestor(), request:recipient()
+	if requestor:allianceWith(recipient) then
+		error(`cannot accept alliance request, already allied with {recipient:name()}`)
+	end
+	local alliance = AllianceImpl.AllianceImpl.new(self, requestor, recipient, self._ticks, self._nextAllianceID)
+	self._nextAllianceID += 1
+	table.insert(requestor._alliances, alliance)
+	table.insert(recipient._alliances, alliance)
+	self._stats:allianceFormed(requestor)
+	self._stats:allianceFormed(recipient)
+	table.insert(requestor.pastOutgoingAllianceRequests, request)
+	self:addUpdate({ type = "AllianceRequestReply", request = request:toUpdate(), accepted = true })
+end
+
+function GameImpl:rejectAllianceRequest(request)
+	self.allianceRequests = without(self.allianceRequests, request)
+	table.insert(request:requestor().pastOutgoingAllianceRequests, request)
+	self:addUpdate({ type = "AllianceRequestReply", request = request:toUpdate(), accepted = false })
+end
+
+function GameImpl:expireAlliance(alliance)
+	local recipientSet = {}
+	for _, a in alliance:recipient():alliances() do
+		recipientSet[a] = true
+	end
+	local shared = {}
+	for _, a in alliance:requestor():alliances() do
+		if recipientSet[a] then
+			table.insert(shared, a)
+		end
+	end
+	if #shared ~= 1 then
+		error(`cannot expire alliance: must have exactly one alliance, have {#shared}`)
+	end
+	local expiring = shared[1]
+	local duration = self._ticks - expiring:createdAt()
+	self._stats:allianceEnded(expiring:requestor(), duration, "expired")
+	self._stats:allianceEnded(expiring:recipient(), duration, "expired")
+	self:_detachAlliance(expiring)
+	self:addUpdate({ type = "AllianceExpired", player1ID = alliance:requestor():smallID(), player2ID = alliance:recipient():smallID() })
 end
 
 function GameImpl:breakAlliance(breaker, alliance)
@@ -362,16 +436,6 @@ function GameImpl:removeAlliancesByPlayerSilently(player)
 		self._stats:allianceEnded(alliance:recipient(), duration, nil)
 		self:_detachAlliance(alliance)
 	end
-end
-
-local function without(list, item)
-	local out = {}
-	for _, v in list do
-		if v ~= item then
-			table.insert(out, v)
-		end
-	end
-	return out
 end
 
 function GameImpl:_detachAlliance(alliance)
@@ -750,6 +814,22 @@ function GameImpl:displayMessage(message: string, messageType: number, playerID:
 		params = params,
 		unitID = unitID,
 		focusPlayerID = if focusPlayerID ~= nil then self:player(focusPlayerID):smallID() else nil,
+	})
+end
+
+function GameImpl:sendEmojiUpdate(msg)
+	self:addUpdate({ type = "Emoji", emoji = msg })
+end
+
+function GameImpl:displayChat(message: string, category: string, target: string?, playerID: string?, isFrom: boolean, recipient: string)
+	self:addUpdate({
+		type = "DisplayChatEvent",
+		key = message,
+		category = category,
+		target = target,
+		playerID = if playerID ~= nil then self:player(playerID):smallID() else nil,
+		isFrom = isFrom,
+		recipient = recipient,
 	})
 end
 

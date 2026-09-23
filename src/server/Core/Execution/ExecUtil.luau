@@ -138,4 +138,38 @@ function ExecUtil.listNukeBreakAlliance(game, targetTile: number, magnitude, thr
 	return out
 end
 
+-- Would a nuke here break an alliance with one of `allySmallIds` (a set)?
+-- Any allied structure in the blast, or an ally's weighted tile count over
+-- the threshold (early exit). wouldNukeBreakAlliance.
+function ExecUtil.wouldNukeBreakAlliance(game, targetTile: number, magnitude, allySmallIds, threshold: number): boolean
+	if allySmallIds == nil or next(allySmallIds) == nil then
+		return false
+	end
+	local Structures = require(script.Parent.Parent.GameTypes).Structures
+	local hitsAllied = game:anyUnitNearby(targetTile, magnitude.outer, Structures.types, function(unit)
+		return unit:owner():isPlayer() and allySmallIds[unit:owner():smallID()] == true
+	end)
+	if hitsAllied then
+		return true
+	end
+	local inner2 = magnitude.inner * magnitude.inner
+	local counts = {}
+	local result = false
+	game:circleSearch(targetTile, magnitude.outer, function(tile, d2)
+		if result then
+			return false
+		end
+		local owner = game:ownerID(tile)
+		if owner > 0 and allySmallIds[owner] then
+			counts[owner] = (counts[owner] or 0) + (if d2 <= inner2 then 1 else 0.5)
+			if counts[owner] > threshold then
+				result = true
+				return false
+			end
+		end
+		return true
+	end)
+	return result
+end
+
 return ExecUtil

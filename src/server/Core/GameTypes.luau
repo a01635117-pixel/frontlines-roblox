@@ -35,6 +35,9 @@ GameTypes.GameMapSize = table.freeze({
 	Normal = "Normal",
 })
 
+-- Emoji recipient meaning "everyone" (upstream AllPlayers).
+GameTypes.AllPlayers = "AllPlayers"
+
 GameTypes.Relation = table.freeze({
 	Hostile = 0,
 	Distrustful = 1,
