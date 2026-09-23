@@ -5,6 +5,8 @@ return {
 	id = "World",
 	name = "World",
 	categories = { "featured", "world" },
+	-- Tribe name themes (map-generator info.json); empty means "default".
+	themes = {  },
 	width = 1000,
 	height = 500,
 	numLandTiles = 158068,

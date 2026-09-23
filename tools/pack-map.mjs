@@ -19,9 +19,11 @@ import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const upstreamMaps =
-  process.env.OPENFRONT_MAPS ??
-  path.resolve(here, "../../OpenFrontIO/resources/maps");
+const upstreamRoot =
+  process.env.OPENFRONT_DIR ?? path.resolve(here, "../../OpenFrontIO");
+const upstreamMaps = path.join(upstreamRoot, "resources/maps");
+// Map-generator source info (tribe name themes live only here).
+const upstreamInfo = path.join(upstreamRoot, "map-generator/assets/maps");
 const outDir = path.resolve(here, "../src/shared/Maps");
 
 function packTerrain(bin, meta, label) {
@@ -93,6 +95,11 @@ function packMap(dir) {
     mini,
     `${dir}/map16x`,
   );
+  const infoFile = path.join(upstreamInfo, dir, "info.json");
+  const info = fs.existsSync(infoFile)
+    ? JSON.parse(fs.readFileSync(infoFile, "utf8"))
+    : {};
+  const themes = info.themes ?? [];
   // Module name must be a valid Roblox instance name; ids are like "World".
   const id = String(manifest.id ?? manifest.name).replace(/[^A-Za-z0-9_]/g, "");
 
@@ -103,6 +110,8 @@ return {
 \tid = ${luaStr(id)},
 \tname = ${luaStr(manifest.name)},
 \tcategories = { ${(manifest.categories ?? []).map(luaStr).join(", ")} },
+\t-- Tribe name themes (map-generator info.json); empty means "default".
+\tthemes = { ${themes.map(luaStr).join(", ")} },
 \twidth = ${map.width},
 \theight = ${map.height},
 \tnumLandTiles = ${map.num_land_tiles},

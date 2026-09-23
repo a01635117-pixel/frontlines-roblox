@@ -39,6 +39,7 @@ function MapLoader.load(mapModule: ModuleScript)
 		id = data.id,
 		name = data.name,
 		categories = data.categories,
+		themes = data.themes or {},
 		nations = data.nations,
 		additionalNations = data.additionalNations,
 		teamGameSpawnAreas = data.teamGameSpawnAreas,

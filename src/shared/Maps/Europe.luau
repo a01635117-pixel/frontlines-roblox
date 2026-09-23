@@ -5,6 +5,8 @@ return {
 	id = "Europe",
 	name = "Europe",
 	categories = { "featured", "continental", "europe" },
+	-- Tribe name themes (map-generator info.json); empty means "default".
+	themes = { "europe" },
 	width = 1452,
 	height = 836,
 	numLandTiles = 568335,

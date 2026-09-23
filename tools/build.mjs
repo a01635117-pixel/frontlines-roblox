@@ -5,7 +5,7 @@
 // Layout (Rojo-like):
 //   src/shared/**           -> build/Shared.rbxmx   (Folder "Shared", import into ReplicatedStorage)
 //   src/client/*.client.luau -> build/Client.rbxmx  (LocalScripts, import into StarterPlayerScripts)
-//   src/server/*.server.luau -> build/Server.rbxmx  (Scripts, import into ServerScriptService)
+//   src/server/**            -> build/Server.rbxmx  (Scripts + Core modules, import into ServerScriptService)
 //   tests/**                 -> build/Tests.rbxmx   (Folder "Tests", import into ServerStorage)
 //
 // Inside src/shared, directories become Folders and *.luau files become
@@ -59,6 +59,24 @@ function sharedTree(dir, name) {
   return item("Folder", name, children);
 }
 
+// Server tree: directories -> Folders, *.server.luau -> Scripts,
+// other *.luau -> ModuleScripts. Returns the top-level items.
+function serverTree(dir) {
+  if (!fs.existsSync(dir)) return [];
+  const items = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      items.push(item("Folder", entry.name, serverTree(full)));
+    } else if (entry.name.endsWith(".server.luau")) {
+      items.push(item("Script", entry.name.slice(0, -".server.luau".length), [], read(full)));
+    } else if (entry.name.endsWith(".luau")) {
+      items.push(item("ModuleScript", entry.name.slice(0, -".luau".length), [], read(full)));
+    }
+  }
+  return items;
+}
+
 function scripts(dir, suffix, className) {
   if (!fs.existsSync(dir)) return [];
   return fs
@@ -77,6 +95,6 @@ function write(name, items) {
 fs.mkdirSync(buildDir, { recursive: true });
 write("Shared.rbxmx", [sharedTree(path.join(root, "src/shared"), "Shared")]);
 write("Client.rbxmx", scripts(path.join(root, "src/client"), ".client.luau", "LocalScript"));
-write("Server.rbxmx", scripts(path.join(root, "src/server"), ".server.luau", "Script"));
+write("Server.rbxmx", serverTree(path.join(root, "src/server")));
 // Golden-vector specs; import into ServerStorage (never replicated to players).
 write("Tests.rbxmx", [sharedTree(path.join(root, "tests"), "Tests")]);

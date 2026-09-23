@@ -1,0 +1,159 @@
+-- Golden simulation check: replays the scenario from tools/golden-sim.mts in
+-- the Luau port and compares every snapshot with the original TypeScript.
+--
+-- The run is resumable so it fits in short Studio calls:
+--   local spec = require(game.ServerStorage.Tests.SimSpec)
+--   spec.reset()
+--   spec.run(250)   -- advance to tick 250, comparing snapshots on the way
+--   spec.run(1000)
+
+local EncodingService = game:GetService("EncodingService")
+local ServerScriptService = game:GetService("ServerScriptService")
+local Shared = game:GetService("ReplicatedStorage").Shared
+
+local V = require(script.Parent.SimVectors)
+
+local SimSpec = {}
+
+local state = nil
+
+local function sha256Hex(buf: buffer): string
+	local h = EncodingService:ComputeBufferHash(buf, Enum.HashAlgorithm.Sha256)
+	local out = table.create(buffer.len(h))
+	for i = 0, buffer.len(h) - 1 do
+		out[i + 1] = string.format("%02x", buffer.readu8(h, i))
+	end
+	return table.concat(out)
+end
+
+local function snapshot(game)
+	local all = game:allPlayers()
+	local totalOwned = 0
+	for _, p in all do
+		totalOwned += p:numTilesOwned()
+	end
+	return {
+		stateSha = sha256Hex(game:map():tileStateBuffer()),
+		hash = game:hash(),
+		alive = #game:players(),
+		totalOwned = totalOwned,
+		players = all,
+	}
+end
+
+-- Compares one snapshot; returns a list of human-readable differences.
+local function compare(got, want): { string }
+	local diffs = {}
+	if got.stateSha ~= want.stateSha then
+		table.insert(diffs, `tile state sha {string.sub(got.stateSha, 1, 12)} != {string.sub(want.stateSha, 1, 12)}`)
+	end
+	if got.hash ~= want.hash then
+		table.insert(diffs, `game hash {got.hash} != {want.hash}`)
+	end
+	if got.alive ~= want.alive then
+		table.insert(diffs, `alive {got.alive} != {want.alive}`)
+	end
+	if got.totalOwned ~= want.totalOwned then
+		table.insert(diffs, `owned {got.totalOwned} != {want.totalOwned}`)
+	end
+	if #got.players ~= #want.players then
+		table.insert(diffs, `players {#got.players} != {#want.players}`)
+	end
+	for i, wp in want.players do
+		local p = got.players[i]
+		if p == nil then
+			break
+		end
+		local line = {}
+		if p:name() ~= wp.name then
+			table.insert(line, `name {p:name()} != {wp.name}`)
+		end
+		if p:id() ~= wp.id then
+			table.insert(line, `id {p:id()} != {wp.id}`)
+		end
+		if p:numTilesOwned() ~= wp.tiles then
+			table.insert(line, `tiles {p:numTilesOwned()} != {wp.tiles}`)
+		end
+		if p:troops() ~= wp.troops then
+			table.insert(line, `troops {p:troops()} != {wp.troops}`)
+		end
+		if p:gold() ~= wp.gold then
+			table.insert(line, `gold {p:gold()} != {wp.gold}`)
+		end
+		if #line > 0 then
+			table.insert(diffs, `player #{i} ({wp.name}): {table.concat(line, ", ")}`)
+			if #diffs > 8 then
+				break
+			end
+		end
+	end
+	return diffs
+end
+
+function SimSpec.reset()
+	local GameRunner = require(ServerScriptService.Core.GameRunner)
+	local t0 = os.clock()
+	local runner = GameRunner.create({ gameID = V.gameID, config = V.config, players = {} }, Shared.Maps[V.map])
+	state = {
+		runner = runner,
+		tick = 0,
+		nextSnap = 1,
+		results = {},
+		firstFailure = nil,
+		simSeconds = 0,
+		setupMs = (os.clock() - t0) * 1000,
+	}
+	return `reset: setup {math.floor(state.setupMs)} ms`
+end
+
+-- Advance to `untilTick` (inclusive snapshot check), return a report.
+function SimSpec.run(untilTick: number): string
+	if state == nil then
+		SimSpec.reset()
+	end
+	local s = state
+	local game = s.runner.game
+	while s.tick <= math.min(untilTick, V.ticks) do
+		local want = V.snapshots[s.nextSnap]
+		if want and want.tick == s.tick then
+			local diffs = compare(snapshot(game), want)
+			table.insert(s.results, { tick = s.tick, ok = #diffs == 0, diffs = diffs })
+			if #diffs > 0 and s.firstFailure == nil then
+				s.firstFailure = s.tick
+			end
+			s.nextSnap += 1
+		end
+		if s.tick == untilTick or s.tick == V.ticks then
+			break
+		end
+		local t0 = os.clock()
+		s.runner:executeNextTick()
+		s.simSeconds += os.clock() - t0
+		s.tick += 1
+	end
+
+	local lines = {}
+	for _, r in s.results do
+		if r.ok then
+			table.insert(lines, `tick {r.tick}: OK`)
+		else
+			table.insert(lines, `tick {r.tick}: MISMATCH`)
+			for _, d in r.diffs do
+				table.insert(lines, `    {d}`)
+			end
+		end
+	end
+	table.insert(
+		lines,
+		string.format(
+			"at tick %d, sim %.0f ms total (%.2f ms/tick), first failure: %s",
+			s.tick,
+			s.simSeconds * 1000,
+			s.simSeconds * 1000 / math.max(1, s.tick),
+			tostring(s.firstFailure)
+		)
+	)
+	return table.concat(lines, "\n")
+end
+
+return SimSpec
