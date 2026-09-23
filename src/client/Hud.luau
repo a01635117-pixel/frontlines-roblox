@@ -1,7 +1,8 @@
--- In-game HUD: status line, control panel (troops, gold, attack ratio
+-- In-game HUD: spawn countdown, control panel (troops, gold, attack ratio
 -- slider), leaderboard, hover info and the winner banner.
 -- Layout follows OpenFront's ControlPanel / leaderboard; visuals are native.
 
+local GuiService = game:GetService("GuiService")
 local UserInputService = game:GetService("UserInputService")
 
 local Format = require(script.Parent.Format)
@@ -60,16 +61,35 @@ end
 function Hud.new(gui: ScreenGui)
 	local self = setmetatable({ gui = gui, ratio = 0.2, onRatioChanged = nil }, Hud)
 
-	-- Status line (spawn countdown), top left: the leaderboard owns the top
-	-- right, and a centred line collides with it on narrow screens.
-	local status = panel(gui, "Status")
-	status.Position = UDim2.fromOffset(12, 12)
-	status.AutomaticSize = Enum.AutomaticSize.XY
-	padding(status, 10)
-	local statusText = label(status, "Text", "", 18, FONT_BOLD)
-	statusText.AutomaticSize = Enum.AutomaticSize.XY
-	statusText.TextXAlignment = Enum.TextXAlignment.Center
-	self.statusText = statusText
+	-- Spawn countdown: big digits in the middle of the screen. The top bar
+	-- belongs to Roblox (logo / menu top left), so nothing goes up there.
+	local countdown = Instance.new("Frame")
+	countdown.Name = "Countdown"
+	countdown.AnchorPoint = Vector2.new(0.5, 0.5)
+	countdown.Position = UDim2.fromScale(0.5, 0.45)
+	countdown.Size = UDim2.fromOffset(420, 130)
+	countdown.BackgroundTransparency = 1
+	countdown.Visible = false
+	countdown.Parent = gui
+	local digits = label(countdown, "Digits", "", 96, FONT_BOLD)
+	digits.Size = UDim2.new(1, 0, 0, 96)
+	digits.TextXAlignment = Enum.TextXAlignment.Center
+	local digitsStroke = Instance.new("UIStroke")
+	digitsStroke.Thickness = 3
+	digitsStroke.Transparency = 0.2
+	digitsStroke.Parent = digits
+	local subtitle = label(countdown, "Subtitle", "", 22, FONT_BOLD)
+	subtitle.Position = UDim2.fromOffset(0, 100)
+	subtitle.Size = UDim2.new(1, 0, 0, 26)
+	subtitle.TextXAlignment = Enum.TextXAlignment.Center
+	local subtitleStroke = Instance.new("UIStroke")
+	subtitleStroke.Thickness = 2
+	subtitleStroke.Transparency = 0.3
+	subtitleStroke.Parent = subtitle
+	self.countdown, self.countdownDigits, self.countdownSubtitle = countdown, digits, subtitle
+
+	-- Panels at the top sit below Roblox's top bar.
+	local topInset = GuiService:GetGuiInset().Y + 8
 
 	-- Control panel, bottom left.
 	local control = panel(gui, "ControlPanel")
@@ -157,7 +177,7 @@ function Hud.new(gui: ScreenGui)
 	-- Leaderboard, top right.
 	local board = panel(gui, "Leaderboard")
 	board.AnchorPoint = Vector2.new(1, 0)
-	board.Position = UDim2.new(1, -12, 0, 12)
+	board.Position = UDim2.new(1, -12, 0, topInset)
 	board.Size = UDim2.fromOffset(260, 0)
 	board.AutomaticSize = Enum.AutomaticSize.Y
 	padding(board, 10)
@@ -218,9 +238,13 @@ function Hud.new(gui: ScreenGui)
 	return self
 end
 
-function Hud:setStatus(text: string)
-	self.statusText.Text = text
-	self.statusText.Parent.Visible = text ~= ""
+-- Big centred countdown; pass nil seconds to hide it.
+function Hud:setCountdown(seconds: (number | string)?, subtitle: string?)
+	self.countdown.Visible = seconds ~= nil
+	if seconds ~= nil then
+		self.countdownDigits.Text = tostring(seconds)
+		self.countdownSubtitle.Text = subtitle or ""
+	end
 end
 
 function Hud:setRatio(ratio: number)

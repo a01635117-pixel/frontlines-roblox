@@ -39,7 +39,7 @@ background.BorderSizePixel = 0
 background.Parent = gui
 
 local hud = Hud.new(gui)
-hud:setStatus("Waiting for the match to start…")
+hud:setCountdown("…", "Waiting for the match to start")
 gui.Parent = player:WaitForChild("PlayerGui")
 
 -- Match state --------------------------------------------------------------------
@@ -220,15 +220,13 @@ end
 
 RunService.RenderStepped:Connect(function()
 	renderer:flush()
-	if gameOver then
-		hud:setStatus("")
-	elseif inSpawnPhase then
-		local left = math.max(0, math.ceil((spawnPhaseTurns - estimatedTick()) / 10))
+	if inSpawnPhase and not gameOver then
+		local left = math.max(1, math.ceil((spawnPhaseTurns - estimatedTick()) / 10))
 		local mine = mySmallID and stats[mySmallID]
 		local chosen = mine ~= nil and mine.tiles > 0
-		hud:setStatus(if chosen then `Spawn chosen · game starts in {left}s` else `Choose your starting location · {left}s`)
+		hud:setCountdown(left, if chosen then "Spawn chosen — get ready" else "Click the map to choose where to start")
 	else
-		hud:setStatus("")
+		hud:setCountdown(nil)
 	end
 end)
 
