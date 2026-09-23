@@ -6,6 +6,7 @@
 //   src/shared/**           -> build/Shared.rbxmx   (Folder "Shared", import into ReplicatedStorage)
 //   src/client/*.client.luau -> build/Client.rbxmx  (LocalScripts, import into StarterPlayerScripts)
 //   src/server/*.server.luau -> build/Server.rbxmx  (Scripts, import into ServerScriptService)
+//   tests/**                 -> build/Tests.rbxmx   (Folder "Tests", import into ServerStorage)
 //
 // Inside src/shared, directories become Folders and *.luau files become
 // ModuleScripts named after the file.
@@ -77,3 +78,5 @@ fs.mkdirSync(buildDir, { recursive: true });
 write("Shared.rbxmx", [sharedTree(path.join(root, "src/shared"), "Shared")]);
 write("Client.rbxmx", scripts(path.join(root, "src/client"), ".client.luau", "LocalScript"));
 write("Server.rbxmx", scripts(path.join(root, "src/server"), ".server.luau", "Script"));
+// Golden-vector specs; import into ServerStorage (never replicated to players).
+write("Tests.rbxmx", [sharedTree(path.join(root, "tests"), "Tests")]);
