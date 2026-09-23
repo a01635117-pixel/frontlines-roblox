@@ -9,8 +9,7 @@
 --     range circle (defense post); a click upgrades the structure in range or
 --     builds, and clears the ghost (bombs keep it); a click where nothing can
 --     be built just clears it
---   * right click opens a menu with the build options and "Delete"
---     TODO(port): upstream's radial menu (attack / boat / ally / build / delete)
+--   * right click cancels the ghost (the radial menu is RadialMenu.luau)
 -- Availability comes from Net.Query (PlayerImpl:buildableUnits on the server).
 
 local UserInputService = game:GetService("UserInputService")
@@ -84,7 +83,6 @@ function BuildMenu.new(deps)
 	}, BuildMenu)
 	self:_buildHotbar()
 	self:_buildGhost()
-	self:_buildContextMenu()
 	self:_bindKeys()
 	return self
 end
@@ -364,7 +362,6 @@ function BuildMenu:select(unit: string?)
 	self.ghost.Visible = false
 	self.ghostRange.Visible = false
 	if unit then
-		self:closeContextMenu()
 		local item = ITEM_BY_UNIT[unit]
 		self.ghostIcon:Destroy()
 		local icon = Icons.label(self.ghost, item.icon, 20, { white = true })
@@ -379,6 +376,10 @@ function BuildMenu:select(unit: string?)
 end
 
 -- Query what we can do at a tile; cb(result) runs later.
+function BuildMenu:query(tile: number, cb)
+	self:_query(tile, cb)
+end
+
 function BuildMenu:_query(tile: number, cb)
 	task.spawn(function()
 		local ok, result = pcall(function()
@@ -499,10 +500,6 @@ end
 -- Left click on the map; returns true when the build menu used it
 -- (BuildPreviewController.createStructure).
 function BuildMenu:click(tile: number): boolean
-	if self.contextMenu.Visible then
-		self:closeContextMenu()
-		return true
-	end
 	local unit = self.selected
 	if not unit then
 		return false
@@ -530,116 +527,6 @@ function BuildMenu:click(tile: number): boolean
 	return true
 end
 
--- Context menu ----------------------------------------------------------------------------
-
-function BuildMenu:_buildContextMenu()
-	local menu = Style.frame(self.deps.gui, "ContextMenu", C.gray800, 0.92)
-	menu.AutomaticSize = Enum.AutomaticSize.Y
-	menu.Size = UDim2.fromOffset(220, 0)
-	menu.Active = true
-	menu.Visible = false
-	menu.ZIndex = 30
-	Style.corner(menu, 8)
-	Style.padding(menu, 6)
-	Style.column(menu, 3)
-	self.contextMenu = menu
-end
-
-function BuildMenu:closeContextMenu()
-	self.contextMenu.Visible = false
-	for _, c in self.contextMenu:GetChildren() do
-		if c:IsA("GuiObject") then
-			c:Destroy()
-		end
-	end
-	self.contextSeq = (self.contextSeq or 0) + 1
-end
-
-local function menuRow(menu: Frame, order: number, iconName: string?, left: string, right: string, enabled: boolean, color: Color3?)
-	local b = Instance.new("TextButton")
-	b.LayoutOrder = order
-	b.Size = UDim2.new(1, 0, 0, 28)
-	b.BackgroundColor3 = C.gray700
-	b.BackgroundTransparency = if enabled then 0 else 0.6
-	b.AutoButtonColor = enabled
-	b.BorderSizePixel = 0
-	b.Text = ""
-	b.ZIndex = 31
-	Style.corner(b, 5)
-	local x = 8
-	if iconName then
-		local icon = Icons.label(b, iconName, 16, { white = true })
-		icon.Position = UDim2.fromOffset(8, 6)
-		icon.ZIndex = 32
-		icon.ImageTransparency = if enabled then 0 else 0.6
-		x = 30
-	end
-	local l = Style.text(b, "Left", left, 14, F.bold, if enabled then (color or C.white) else C.gray500)
-	l.AutomaticSize = Enum.AutomaticSize.None
-	l.Size = UDim2.new(1, -x - 8, 1, 0)
-	l.Position = UDim2.fromOffset(x, 0)
-	l.TextXAlignment = Enum.TextXAlignment.Left
-	l.ZIndex = 32
-	local r = Style.text(b, "Right", right, 13, F.bold, if enabled then C.yellow300 else C.gray500)
-	r.AutomaticSize = Enum.AutomaticSize.None
-	r.Size = UDim2.new(1, -8, 1, 0)
-	r.TextXAlignment = Enum.TextXAlignment.Right
-	r.ZIndex = 32
-	b.Parent = menu
-	return b
-end
-
--- Right click on the map at screen position p / tile.
-function BuildMenu:openContextMenu(p: Vector2, tile: number)
-	if self.selected then
-		self:select(nil)
-		return
-	end
-	self:closeContextMenu()
-	if not self.deps.canAct() then
-		return
-	end
-	local seq = self.contextSeq
-	self:_query(tile, function(result)
-		if seq ~= self.contextSeq or result == nil then
-			return
-		end
-		local menu = self.contextMenu
-		local order = 0
-		for _, item in ITEMS do
-			local info = self:_infoFor(result, item.unit)
-			if info then
-				order += 1
-				local enabled = info.canBuild or info.canUpgrade
-				local label = if info.canUpgrade then `Upgrade {item.unit}` else item.unit
-				local row = menuRow(menu, order, item.icon, label, Format.renderNumber(info.cost), enabled)
-				if enabled then
-					row.Activated:Connect(function()
-						self.deps.net.Intent:FireServer({ type = "place", unit = item.unit, tile = tile })
-						self:closeContextMenu()
-					end)
-				end
-			end
-		end
-		if result.deleteUnit then
-			order += 1
-			local row = menuRow(menu, order, nil, `Delete {result.deleteUnit}`, "", true, C.red500)
-			row.Activated:Connect(function()
-				self.deps.net.Intent:FireServer({ type = "delete_at", tile = tile })
-				self:closeContextMenu()
-			end)
-		end
-		if order == 0 then
-			return
-		end
-		-- Keep the menu on screen.
-		local screen = self.deps.gui.AbsoluteSize
-		local h = 12 + order * 31
-		menu.Position = UDim2.fromOffset(math.min(p.X + 8, screen.X - 228), math.clamp(p.Y - 10, 8, math.max(8, screen.Y - h - 8)))
-		menu.Visible = true
-	end)
-end
-
 -- Keys ------------------------------------------------------------------------------------
 
 function BuildMenu:_bindKeys()
@@ -654,7 +541,6 @@ function BuildMenu:_bindKeys()
 		end
 		if input.KeyCode == Enum.KeyCode.Escape then
 			self:select(nil)
-			self:closeContextMenu()
 			return
 		end
 		local unit = byKey[input.KeyCode]

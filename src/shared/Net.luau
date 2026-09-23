@@ -21,7 +21,9 @@
 --                      | { type = "place", unit, tile }   (build, or upgrade a structure in range)
 --                      | { type = "delete_at", tile }     (closest own structure within 5 tiles)
 --                      | { type = "move_warship", unitIds, tile }
---   Query(q) -> result  RemoteFunction: { tile } -> { units = { { unit, cost, canBuild, canUpgrade } }, deleteUnit }
+--                      | { type = "attack_at" | "boat_at", tile, ratio }   (radial menu)
+--   Query(q) -> result  RemoteFunction: { tile } -> { units = { { unit, cost, canBuild, canUpgrade,
+--                      upgradeCosts, upgradeTile } }, deleteUnit, canAttack, canBoat, ownerSmallID, inSpawnPhase }
 
 local RunService = game:GetService("RunService")
 local EncodingService = game:GetService("EncodingService")

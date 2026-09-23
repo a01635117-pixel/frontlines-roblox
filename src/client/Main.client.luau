@@ -19,6 +19,7 @@ local Hud = require(script.Parent:WaitForChild("Hud"))
 local MapCamera = require(script.Parent:WaitForChild("MapCamera"))
 local NameLayer = require(script.Parent:WaitForChild("NameLayer"))
 local TerritoryRenderer = require(script.Parent:WaitForChild("TerritoryRenderer"))
+local RadialMenu = require(script.Parent:WaitForChild("RadialMenu"))
 local SpawnRing = require(script.Parent:WaitForChild("SpawnRing"))
 local TutorialPanel = require(script.Parent:WaitForChild("TutorialPanel"))
 local UnitLayer = require(script.Parent:WaitForChild("UnitLayer"))
@@ -258,6 +259,18 @@ end
 
 local spawnRing = SpawnRing.new(background, camera, gameMap)
 
+local radialMenu = RadialMenu.new({
+	gui = gui,
+	net = Net,
+	buildMenu = buildMenu,
+	mySmallID = function()
+		return mySmallID
+	end,
+	ratio = function()
+		return controlPanel.ratio
+	end,
+})
+
 local function refreshPanelVisibility()
 	local mine = myStats()
 	controlPanel:setVisible(not inSpawnPhase and mine ~= nil and mine.tiles > 0)
@@ -381,6 +394,10 @@ camera.onClick = function(p: Vector2)
 	if gameOver or mySmallID == nil then
 		return
 	end
+	-- The radial menu handles its own clicks (on mouse down).
+	if radialMenu:isOpen() or (radialMenu.closedAt and os.clock() - radialMenu.closedAt < 0.3) then
+		return
+	end
 	local tile = tileAtScreen(p)
 	if tile == nil then
 		return
@@ -423,9 +440,18 @@ camera.onRightClick = function(p: Vector2)
 		unitLayer:setSelected(nil)
 		return
 	end
+	-- A ghost structure is cancelled by right click; otherwise open the radial menu.
+	if buildMenu.selected then
+		buildMenu:select(nil)
+		return
+	end
 	local tile = tileAtScreen(p)
-	if tile ~= nil and not gameOver then
-		buildMenu:openContextMenu(p, tile)
+	if tile ~= nil and not gameOver and mySmallID ~= nil then
+		buildMenu:query(tile, function(info)
+			if info then
+				radialMenu:openAt(p, tile, info)
+			end
+		end)
 	end
 end
 

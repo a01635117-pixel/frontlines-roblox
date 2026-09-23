@@ -299,7 +299,16 @@ Net.Query.OnServerInvoke = function(player: Player, q)
 		})
 	end
 	local del = deletableAt(me, q.tile)
-	return { units = out, deleteUnit = if del then del:type() else nil }
+	local spawnPhase = mg:inSpawnPhase()
+	return {
+		units = out,
+		deleteUnit = if del then del:type() else nil,
+		-- Radial menu (RadialMenuElements): centre attack, boat slot, owner.
+		canAttack = not spawnPhase and me:canAttack(q.tile),
+		canBoat = not spawnPhase and mg:isLand(q.tile) and me:canBuild("Transport", q.tile) ~= false,
+		ownerSmallID = mg:ownerID(q.tile),
+		inSpawnPhase = spawnPhase,
+	}
 end
 
 Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
@@ -360,6 +369,22 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 			if spawn ~= false and mg:euclideanDistSquared(tile, spawn) < 100 * 100 then
 				table.insert(pending, { type = "boat", clientID = clientID, dst = tile, ratio = ratio })
 			end
+		end
+	elseif t == "attack_at" or t == "boat_at" then
+		-- Radial menu: centre button attack / boat slot (no auto-boat range limit).
+		local tile, ratio = intent.tile, intent.ratio
+		if not isInt(tile) or not mg:isValidRef(tile) or type(ratio) ~= "number" or ratio ~= ratio or ratio <= 0 or ratio > 1 then
+			return
+		end
+		if mg:inSpawnPhase() then
+			return
+		end
+		if t == "attack_at" then
+			if me:canAttack(tile) then
+				table.insert(pending, { type = "attack", clientID = clientID, targetID = mg:owner(tile):id(), ratio = ratio })
+			end
+		elseif mg:isLand(tile) and me:canBuild("Transport", tile) ~= false then
+			table.insert(pending, { type = "boat", clientID = clientID, dst = tile, ratio = ratio })
 		end
 	elseif t == "cancel_attack" then
 		if type(intent.attackID) == "string" and #intent.attackID <= 16 then

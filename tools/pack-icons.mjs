@@ -29,6 +29,20 @@ const ICONS = {
   atomBomb: "NukeIconWhite.svg",
   hydrogenBomb: "MushroomCloudIconWhite.svg",
   mirv: "MIRVIcon.svg",
+  // Radial menu (RadialMenuElements.ts / RadialMenu.ts).
+  boat: "BoatIconWhite.svg",
+  build: "BuildIconWhite.svg",
+  info: "InfoIcon.svg",
+  alliance: "AllianceIconWhite.svg",
+  x: "XIcon.svg",
+  back: "BackIconWhite.svg",
+  swordWhite: "SwordIconWhite.svg",
+  target: "TargetIconWhite.svg",
+  traitor: "TraitorIconWhite.svg",
+  donateGold: "DonateGoldIconWhite.svg",
+  donateTroop: "DonateTroopIconWhite.svg",
+  emoji: "EmojiIconWhite.svg",
+  chat: "ChatIconWhite.svg",
 };
 
 function render(file) {
