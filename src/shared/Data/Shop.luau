@@ -12,29 +12,29 @@
 
 local Shop = {}
 
-Shop.SUPPORTER_PASS_ID = 0 -- game pass: supporter badge + gold name
+Shop.SUPPORTER_PASS_ID = 1995368447 -- game pass: supporter badge + gold name
 Shop.SUPPORTER_PRICE = 199
 
 Shop.items = {
-	{ id = "pattern_stripes", kind = "pattern", name = "Stripes", price = 49, productId = 0, scale = 1,
+	{ id = "pattern_stripes", kind = "pattern", name = "Stripes", price = 49, productId = 3714528403, scale = 1,
 		rows = { "########", "        ", "        ", "        ", "########", "        ", "        ", "        " } },
-	{ id = "pattern_checker", kind = "pattern", name = "Checker", price = 49, productId = 0, scale = 1,
+	{ id = "pattern_checker", kind = "pattern", name = "Checker", price = 49, productId = 3714528650, scale = 1,
 		rows = { "####    ", "####    ", "####    ", "####    ", "    ####", "    ####", "    ####", "    ####" } },
-	{ id = "pattern_dots", kind = "pattern", name = "Dots", price = 49, productId = 0, scale = 1,
+	{ id = "pattern_dots", kind = "pattern", name = "Dots", price = 49, productId = 3714528785, scale = 1,
 		rows = { "        ", " ##     ", " ##     ", "        ", "        ", "     ## ", "     ## ", "        " } },
-	{ id = "pattern_diagonal", kind = "pattern", name = "Diagonal", price = 79, productId = 0, scale = 1,
+	{ id = "pattern_diagonal", kind = "pattern", name = "Diagonal", price = 79, productId = 3714528846, scale = 1,
 		rows = { "##      ", " ##     ", "  ##    ", "   ##   ", "    ##  ", "     ## ", "      ##", "#      #" } },
-	{ id = "pattern_bricks", kind = "pattern", name = "Bricks", price = 79, productId = 0, scale = 1,
+	{ id = "pattern_bricks", kind = "pattern", name = "Bricks", price = 79, productId = 3714529041, scale = 1,
 		rows = { "########", "   #    ", "   #    ", "   #    ", "########", "#       ", "#       ", "#       " } },
-	{ id = "pattern_waves", kind = "pattern", name = "Waves", price = 99, productId = 0, scale = 1,
+	{ id = "pattern_waves", kind = "pattern", name = "Waves", price = 99, productId = 3714529127, scale = 1,
 		rows = { "        ", "##    ##", "  #  #  ", "   ##   ", "        ", "##    ##", "  #  #  ", "   ##   " } },
-	{ id = "pattern_diamonds", kind = "pattern", name = "Diamonds", price = 99, productId = 0, scale = 1,
+	{ id = "pattern_diamonds", kind = "pattern", name = "Diamonds", price = 99, productId = 3714529205, scale = 1,
 		rows = { "   #    ", "  # #   ", " #   #  ", "#     # ", " #   #  ", "  # #   ", "   #    ", "        " } },
-	{ id = "pattern_crosses", kind = "pattern", name = "Crosses", price = 99, productId = 0, scale = 1,
+	{ id = "pattern_crosses", kind = "pattern", name = "Crosses", price = 99, productId = 3714529357, scale = 1,
 		rows = { "        ", "   #    ", "   #    ", " #####  ", "   #    ", "   #    ", "        ", "        " } },
-	{ id = "name_gold", kind = "nameColor", name = "Gold name", price = 99, productId = 0, color = { 255, 214, 90 } },
-	{ id = "name_cyan", kind = "nameColor", name = "Cyan name", price = 99, productId = 0, color = { 94, 234, 212 } },
-	{ id = "name_pink", kind = "nameColor", name = "Pink name", price = 99, productId = 0, color = { 244, 114, 182 } },
+	{ id = "name_gold", kind = "nameColor", name = "Gold name", price = 99, productId = 3714529419, color = { 255, 214, 90 } },
+	{ id = "name_cyan", kind = "nameColor", name = "Cyan name", price = 99, productId = 3714529488, color = { 94, 234, 212 } },
+	{ id = "name_pink", kind = "nameColor", name = "Pink name", price = 99, productId = 3714529566, color = { 244, 114, 182 } },
 }
 
 Shop.byId = {}
