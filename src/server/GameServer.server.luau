@@ -389,9 +389,6 @@ local lobbyConn = Net.Intent.OnServerEvent:Connect(function(player: Player, inte
 		return
 	end
 	if intent.type == "lobby_set" and type(intent.key) == "string" then
-		if lobby.mode == "solo" and intent.key ~= "map" then
-			return -- singleplayer: pick the map, everything else stays default
-		end
 		if not BASIC_SETTINGS[intent.key] and not hostAdvanced(player.UserId) then
 			Net.Event:FireClient(player, { type = "NeedHostPass" })
 			return

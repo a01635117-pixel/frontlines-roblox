@@ -656,15 +656,20 @@ function LobbyScreen:_refresh()
 	local public = st.mode == "public"
 	local solo = st.mode == "solo"
 	local simple = public or solo
-	-- Public / singleplayer: only the map and Singleplayer-Multiplayer.
+	-- Public: only the map vote and Singleplayer-Multiplayer. Singleplayer
+	-- gets the switch plus every setting, like a private match (upstream
+	-- SinglePlayerModal): difficulty and mode free, the rest Host Pass.
 	c.playRow.Visible = simple
-	c.modeRow.Visible = not simple
+	c.modeRow.Visible = not public
 	mark(c.play.solo, solo)
 	mark(c.play.multi, public)
 	for title, sec in self.sectionFrames or {} do
 		if title ~= "Map" and title ~= "Mode" and title ~= "Players" then
-			sec.Visible = not simple
+			sec.Visible = not public
 		end
+	end
+	if self.sectionFrames and self.sectionFrames.Players then
+		self.sectionFrames.Players.Visible = not solo
 	end
 	if self.sectionFrames and self.sectionFrames.Mode then
 		-- The Singleplayer / Multiplayer switch goes first, above the maps.
@@ -672,7 +677,7 @@ function LobbyScreen:_refresh()
 	end
 	self.title.Text = if public then "Multiplayer" elseif solo then "Singleplayer" else "Game Settings"
 	if solo then
-		self.hostLabel.Text = Lang.t("Pick a map and start — you against the nations and bots.")
+		self.hostLabel.Text = Lang.t("Pick a map and difficulty and start — you against the nations and bots.")
 	elseif public then
 		local name = s.map
 		for _, m in MapCatalog do

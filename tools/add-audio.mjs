@@ -1,6 +1,7 @@
 // Adds a soundtrack to a promo video from tools/record-sim.mts.
 //
 // Usage: node tools/add-audio.mjs <video.mp4> [out.mp4]
+//   BED=0  game sound effects only (music gets added on the platform instead)
 //
 // Reads <video>.events.json (sound cues logged by the recorder), mixes the
 // upstream sound effects (OpenFront resources/sounds, CC BY-SA 4.0) at those
@@ -104,7 +105,8 @@ function snare(t0, gain) {
     R[s + i] += v * 0.85 * duck[s + i];
   }
 }
-const drumsFrom = 0.9, drumsTo = duration - 2.4;
+const BED = process.env.BED !== "0";
+const drumsFrom = 0.9, drumsTo = BED ? duration - 2.4 : 0;
 for (let b = 0; drumsFrom + b * BEAT < drumsTo; b++) {
   const t = drumsFrom + b * BEAT;
   const inBar = b % 4;
@@ -114,7 +116,7 @@ for (let b = 0; drumsFrom + b * BEAT < drumsTo; b++) {
   if (inBar === 3) { kick(t, 0.28 * build, 180, 90, 0.3); kick(t + BEAT / 2, 0.24 * build, 160, 80, 0.3); }
   if (inBar === 1 || inBar === 3) snare(t, 0.11 * build);
 }
-for (let i = 0; i < N; i++) {
+for (let i = 0; BED && i < N; i++) {
   const t = i / RATE;
   const lfo = 0.6 + 0.4 * Math.sin(2 * Math.PI * 0.11 * t);
   const fade = Math.min(1, t / 1.5) * Math.min(1, (duration - t) / 1.5);
