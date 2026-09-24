@@ -62,6 +62,6 @@ print(SimSpec.run(3000))
 
 ## Configuration before publishing
 
-- `src/shared/GameInfo.luau` — title and the source-code URL shown in game.
+- `src/shared/GameInfo.luau` — title and the source-code URL shown in game (github.com/a01635117-pixel/frontlines-roblox).
 - `src/shared/Data/Shop.luau` — developer product and game pass IDs.
 - Game settings: Max players, Studio API access (DataStore), private servers.
