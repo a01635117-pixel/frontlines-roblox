@@ -154,6 +154,8 @@ function LobbyScreen.new(gui: ScreenGui, net)
 		if evt.type == "JoinCodeFailed" then
 			self.notice = "No private match with that code."
 			self:_refresh()
+		elseif evt.type == "NeedHostPass" then
+			self:_promptHostPass()
 		end
 	end)
 
@@ -217,6 +219,18 @@ function LobbyScreen.new(gui: ScreenGui, net)
 	return self
 end
 
+-- Advanced private-match settings need the Host Pass (or the subscription).
+local ADVANCED_SECTIONS = { Bots = true, Nations = true, Options = true, ["Starting gold"] = true, ["Gold multiplier"] = true, ["Enabled units"] = true }
+function LobbyScreen:_promptHostPass()
+	local Shop = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Data"):WaitForChild("Shop"))
+	if Shop.PASSES.host.id ~= 0 then
+		game:GetService("MarketplaceService"):PromptGamePassPurchase(Players.LocalPlayer, Shop.PASSES.host.id)
+	else
+		self.notice = Lang.t("Advanced settings need the Host Pass.")
+		self:_refresh()
+	end
+end
+
 function LobbyScreen:isHost(): boolean
 	return self.state ~= nil and self.state.hostUserId == Players.LocalPlayer.UserId
 end
@@ -268,6 +282,8 @@ function LobbyScreen:_section(title: string, order: number): Frame
 	local h = Style.text(sec, "Header", title, 16, F.bold, C.gray200)
 	h.LayoutOrder = 0
 	h.ZIndex = 83
+	self.sectionHeaders = self.sectionHeaders or {}
+	self.sectionHeaders[title] = { label = h, base = h.Text }
 	return sec
 end
 
@@ -618,6 +634,13 @@ function LobbyScreen:_refresh()
 		self.hostLabel.Text = if host then "You are the host — choose the settings and start the game." else Lang.t("Host: {hostName} — waiting for the host to start.", { hostName = hostName })
 	end
 	self.startButton.Visible = host
+	-- Host without the Host Pass: mark the locked sections.
+	local locked = host and not public and st.hostAdvanced == false
+	for title, hdr in self.sectionHeaders or {} do
+		if ADVANCED_SECTIONS[title] then
+			hdr.label.Text = if locked then hdr.base .. "  🔒 " .. Lang.t("Host Pass") else hdr.base
+		end
+	end
 	local status = if st.secondsLeft then Lang.t("Starting in {seconds} s", { seconds = st.secondsLeft }) else (if host then "" else "Waiting for the host…")
 	self.status.Text = if self.notice then self.notice .. "   " .. status else status
 	local mm = st.canMatchmake == true

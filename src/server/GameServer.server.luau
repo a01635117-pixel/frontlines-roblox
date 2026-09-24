@@ -104,9 +104,22 @@ local function shopQuery(player: Player, q)
 end
 Net.Query.OnServerInvoke = shopQuery
 Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
-	if type(intent) == "table" and intent.type == "equip" and type(intent.slot) == "string" and allow(player, "equip", 2, 5) then
-		local item = if type(intent.itemId) == "string" then intent.itemId else nil
-		ShopService.equip(player.UserId, intent.slot, item)
+	if type(intent) ~= "table" then
+		return
+	end
+	if intent.type == "equip" and type(intent.slot) == "string" and allow(player, "equip", 3, 6) then
+		-- value: item id (pattern / nameColor / explosion), palette index
+		-- (color) or country code (flag); nil unequips.
+		local value = intent.value
+		if value == nil and type(intent.itemId) == "string" then
+			value = intent.itemId
+		end
+		if value ~= nil and type(value) ~= "string" and type(value) ~= "number" then
+			return
+		end
+		ShopService.equip(player.UserId, intent.slot, value)
+	elseif intent.type == "watch_ad" and allow(player, "ad", 1 / 30, 1) then
+		task.spawn(ShopService.showRewardedAd, player)
 	end
 end)
 
@@ -248,6 +261,7 @@ local function applyVotes()
 	st.mode = leader("mode", st.mode, MODE_ORDER) or lobby.defaults.mode
 end
 
+local hostAdvancedFn = nil -- set below (needs ShopService perks)
 local function lobbyState()
 	local names = {}
 	for _, p in Players:GetPlayers() do
@@ -262,6 +276,7 @@ local function lobbyState()
 		joinCode = lobby.joinCode,
 		canMatchmake = Matchmaking.available(),
 		votes = if lobby.mode == "public" then { map = tally("map"), mode = tally("mode") } else nil,
+		hostAdvanced = hostAdvancedFn and hostAdvancedFn(lobby.hostUserId),
 	}
 end
 
@@ -361,16 +376,33 @@ local voteConn = Net.Intent.OnServerEvent:Connect(function(player: Player, inten
 	applyVotes()
 	broadcastLobby()
 end)
+-- Settings every host can change; the rest need host perks (Host Pass or
+-- the subscription), owning this VIP server, or Studio.
+local BASIC_SETTINGS = { map = true, mode = true, difficulty = true }
+local function hostAdvanced(userId: number?): boolean
+	if userId == nil then
+		return false
+	end
+	return RunService:IsStudio() or game.PrivateServerOwnerId == userId or ShopService.hasHostPerks(userId)
+end
+hostAdvancedFn = hostAdvanced
 local lobbyConn = Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 	if lobby.started or type(intent) ~= "table" or player.UserId ~= lobby.hostUserId then
 		return
 	end
 	if intent.type == "lobby_set" and type(intent.key) == "string" then
+		if not BASIC_SETTINGS[intent.key] and not hostAdvanced(player.UserId) then
+			Net.Event:FireClient(player, { type = "NeedHostPass" })
+			return
+		end
 		setLobbySetting(intent.key, intent.value)
 		broadcastLobby()
 	elseif intent.type == "lobby_start" then
 		lobby.started = true
 	end
+end)
+local perksConn = ShopService.Changed:Connect(function()
+	broadcastLobby()
 end)
 local joinConn = Players.PlayerAdded:Connect(function()
 	pickHost()
@@ -434,6 +466,7 @@ end
 Matchmaking.unpublish()
 lobbyConn:Disconnect()
 voteConn:Disconnect()
+perksConn:Disconnect()
 joinConn:Disconnect()
 leaveConn:Disconnect()
 Net.Lobby:FireAllClients({ starting = true })

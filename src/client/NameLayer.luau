@@ -9,6 +9,7 @@
 
 local Format = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Format"))
 local Icons = require(script.Parent.Icons)
+local FlagAtlas = require(script.Parent.FlagAtlas)
 
 local MIN_TEXT = 7 -- px; smaller names are hidden (upstream culls tiny names too)
 local MAX_TEXT = 100 -- Roblox TextSize cap
@@ -79,6 +80,28 @@ function NameLayer:setPlayer(smallID: number, displayName: string, color: { numb
 	self:_place(e)
 end
 
+-- Cosmetic flag left of the name (Flag Pass); nil removes it.
+function NameLayer:setFlag(smallID: number, code: string?)
+	local e = self.entries[smallID]
+	if e == nil then
+		return
+	end
+	if code and e.flag == nil then
+		local f = Instance.new("ImageLabel")
+		f.Name = "Flag"
+		f.BackgroundTransparency = 1
+		f.AnchorPoint = Vector2.new(1, 0.5)
+		f.ZIndex = 5
+		f.Parent = self.container
+		e.flag = f
+	end
+	if e.flag then
+		FlagAtlas.apply(e.flag, code)
+		e.flagCode = code
+		self:_place(e)
+	end
+end
+
 -- Cosmetic name colour (shop / supporter); nil restores the default.
 function NameLayer:setNameColor(smallID: number, rgb: { number }?)
 	local e = self.entries[smallID]
@@ -127,6 +150,9 @@ function NameLayer:_place(e)
 	local px = e.size * self.camera.zoom
 	local visible = e.alive and px >= MIN_TEXT
 	e.name.Visible = visible
+	if e.flag then
+		e.flag.Visible = visible and e.flagCode ~= nil
+	end
 	e.troops.Visible = visible and px * TROOP_SIZE_MULTIPLIER >= MIN_TEXT * 0.8
 	local p = self.camera:screenPos(e.x, e.y)
 	if e.iconFrames then
@@ -140,6 +166,12 @@ function NameLayer:_place(e)
 	e.name.Position = UDim2.fromOffset(p.X, p.Y)
 	e.troops.TextSize = math.min(MAX_TEXT, px * TROOP_SIZE_MULTIPLIER)
 	e.troops.Position = UDim2.fromOffset(p.X, p.Y + nameSize * 0.9)
+	if e.flag and e.flagCode then
+		-- The name is centred; its width comes from the last layout.
+		local h = nameSize * 0.75
+		e.flag.Size = UDim2.fromOffset(h * 1.5, h)
+		e.flag.Position = UDim2.fromOffset(p.X - e.name.AbsoluteSize.X / 2 - h * 0.25, p.Y)
+	end
 end
 
 -- icons: list of { icon = Icons name, color = Color3? } in status-row order;

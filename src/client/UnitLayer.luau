@@ -195,7 +195,7 @@ function UnitLayer:apply(u)
 	local e = self.units[u.id]
 	if not u.isActive then
 		if u.reachedTarget and BLAST_RADIUS[u.unitType] then
-			self:explode(u.targetTile or u.pos, BLAST_RADIUS[u.unitType])
+			self:explode(u.targetTile or u.pos, BLAST_RADIUS[u.unitType], u.ownerID)
 		end
 		if e then
 			e.frame:Destroy()
@@ -305,14 +305,16 @@ function UnitLayer:_paintSprite(e, tick: number)
 end
 
 -- Flash + expanding shockwave ring over a blast of `radius` tiles.
-function UnitLayer:explode(tile: number, radius: number)
+function UnitLayer:explode(tile: number, radius: number, ownerID: number?)
+	-- Cosmetic blast colours (shop): explosionColors[ownerID] = { flash, ring }.
+	local custom = ownerID and self.explosionColors and self.explosionColors[ownerID]
 	local camera, map = self.camera, self.map
 	local x, y = map:x(tile), map:y(tile)
 	local flash = Instance.new("Frame")
 	flash.Name = "Explosion"
 	flash.AnchorPoint = Vector2.new(0.5, 0.5)
 	flash.BorderSizePixel = 0
-	flash.BackgroundColor3 = Color3.fromRGB(255, 240, 200)
+	flash.BackgroundColor3 = if custom then custom.flash else Color3.fromRGB(255, 240, 200)
 	flash.ZIndex = 9
 	local fc = Instance.new("UICorner")
 	fc.CornerRadius = UDim.new(0.5, 0)
@@ -326,7 +328,7 @@ function UnitLayer:explode(tile: number, radius: number)
 	rc.CornerRadius = UDim.new(0.5, 0)
 	rc.Parent = ring
 	local rs = Instance.new("UIStroke")
-	rs.Color = Color3.fromRGB(255, 170, 60)
+	rs.Color = if custom then custom.ring else Color3.fromRGB(255, 170, 60)
 	rs.Thickness = 3
 	rs.Parent = ring
 	flash.Parent = self.container

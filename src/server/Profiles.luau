@@ -33,6 +33,7 @@ local function defaultProfile()
 		stats = { games = 0, wins = 0, bestPct = 0 },
 		settings = {},
 		receipts = {}, -- ordered list of granted PurchaseIds
+		trials = {}, -- itemId -> os.time() the free trial (rewarded ad) ends
 	}
 end
 

@@ -16,7 +16,7 @@ local Shop = require(Shared:WaitForChild("Data"):WaitForChild("Shop"))
 -- PlayerScripts are copied one by one: wait for every client module before
 -- requiring any (modules require their siblings without WaitForChild).
 -- tools/build.mjs checks this list against src/client.
-local CLIENT_MODULES = { "ShopScreen", "AttacksDisplay", "BuildMenu", "ChatModal", "ControlPanel", "EmojiTable", "EventsDisplay", "Hud", "Icons", "Lang", "LobbyScreen", "MapCamera", "Modal", "NameLayer", "NukePreview", "PlayerPanel", "RadialMenu", "SendResourceModal", "SpawnRing", "Sprites", "Style", "TerritoryRenderer", "TutorialPanel", "UnitLayer", "WorldText" }
+local CLIENT_MODULES = { "ShopScreen", "AttacksDisplay", "BuildMenu", "ChatModal", "ControlPanel", "EmojiTable", "EventsDisplay", "FlagAtlas", "Hud", "Icons", "Lang", "LobbyScreen", "MapCamera", "Modal", "NameLayer", "NukePreview", "PlayerPanel", "RadialMenu", "SendResourceModal", "SpawnRing", "Sprites", "Style", "TerritoryRenderer", "TutorialPanel", "UnitLayer", "WorldText" }
 for _, name in CLIENT_MODULES do
 	script.Parent:WaitForChild(name)
 end
@@ -112,10 +112,59 @@ local haveSpawned = false -- seen our own territory at least once
 local shownDeath = false
 local matchEndsAt: number? = nil -- set when the match is over
 
+-- ThemeProvider.borderColor for a custom colour: HSL lightness - 0.125
+-- (colord darken(borderDarken)).
+local function borderColor(rgb: { number }): { number }
+	local r, g, b = rgb[1] / 255, rgb[2] / 255, rgb[3] / 255
+	local mx, mn = math.max(r, g, b), math.min(r, g, b)
+	local l = (mx + mn) / 2
+	local h, s = 0, 0
+	if mx ~= mn then
+		local d = mx - mn
+		s = if l > 0.5 then d / (2 - mx - mn) else d / (mx + mn)
+		if mx == r then
+			h = (g - b) / d + (if g < b then 6 else 0)
+		elseif mx == g then
+			h = (b - r) / d + 2
+		else
+			h = (r - g) / d + 4
+		end
+		h /= 6
+	end
+	l = math.max(0, l - 0.125)
+	local function hue(p, q, t)
+		t %= 1
+		if t < 1 / 6 then
+			return p + (q - p) * 6 * t
+		elseif t < 1 / 2 then
+			return q
+		elseif t < 2 / 3 then
+			return p + (q - p) * (2 / 3 - t) * 6
+		end
+		return p
+	end
+	if s == 0 then
+		local v = math.floor(l * 255 + 0.5)
+		return { v, v, v }
+	end
+	local q = if l < 0.5 then l * (1 + s) else l + s - l * s
+	local p = 2 * l - q
+	return {
+		math.floor(hue(p, q, h + 1 / 3) * 255 + 0.5),
+		math.floor(hue(p, q, h) * 255 + 0.5),
+		math.floor(hue(p, q, h - 1 / 3) * 255 + 0.5),
+	}
+end
+
 local function addPlayers(entries)
 	for _, e in entries do
 		roster[e.smallID] = e
 		local c = theme:territoryColor(e.id, e.type, e.team)
+		local cos0 = e.cosmetics
+		if cos0 and cos0.color and e.team == nil then
+			-- Custom colour pass (free for all only; teams keep team colours).
+			c = { rgb = cos0.color, border = borderColor(cos0.color) }
+		end
 		renderer:setPlayerColor(e.smallID, c.rgb, c.border)
 		nameLayer:setPlayer(e.smallID, e.name, c.rgb, e.type == "BOT")
 		unitLayer:setOwnerColor(e.smallID, c.rgb, c.border)
@@ -123,6 +172,13 @@ local function addPlayers(entries)
 		local pattern = cos and cos.pattern and Shop.byId[cos.pattern]
 		renderer:setPattern(e.smallID, pattern and pattern.rows, pattern and pattern.scale)
 		nameLayer:setNameColor(e.smallID, cos and cos.nameColor)
+		nameLayer:setFlag(e.smallID, cos and cos.flag)
+		local blast = cos and cos.explosion and Shop.byId[cos.explosion]
+		unitLayer.explosionColors = unitLayer.explosionColors or {}
+		unitLayer.explosionColors[e.smallID] = blast and {
+			flash = Color3.fromRGB(blast.flash[1], blast.flash[2], blast.flash[3]),
+			ring = Color3.fromRGB(blast.ring[1], blast.ring[2], blast.ring[3]),
+		} or nil
 		if e.clientID == state.yourClientID then
 			mySmallID = e.smallID
 			renderer:setLocalPlayer(e.smallID)
