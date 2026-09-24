@@ -11,7 +11,18 @@ local GameMap = require(Shared:WaitForChild("GameMap"))
 local MapLoader = require(Shared:WaitForChild("MapLoader"))
 local Net = require(Shared:WaitForChild("Net"))
 local TerrainColors = require(Shared:WaitForChild("TerrainColors"))
+local Shop = require(Shared:WaitForChild("Data"):WaitForChild("Shop"))
 
+-- PlayerScripts are copied one by one: wait for every client module before
+-- requiring any (modules require their siblings without WaitForChild).
+-- tools/build.mjs checks this list against src/client.
+local CLIENT_MODULES = { "ShopScreen", "AttacksDisplay", "BuildMenu", "ChatModal", "ControlPanel", "EmojiTable", "EventsDisplay", "Hud", "Icons", "Lang", "LobbyScreen", "MapCamera", "Modal", "NameLayer", "NukePreview", "PlayerPanel", "RadialMenu", "SendResourceModal", "SpawnRing", "Sprites", "Style", "TerritoryRenderer", "TutorialPanel", "UnitLayer", "WorldText" }
+for _, name in CLIENT_MODULES do
+	script.Parent:WaitForChild(name)
+end
+
+local Lang = require(script.Parent:WaitForChild("Lang"))
+Lang.init() -- before any GUI exists, so auto-localisation sees every label
 local AttacksDisplay = require(script.Parent:WaitForChild("AttacksDisplay"))
 local BuildMenu = require(script.Parent:WaitForChild("BuildMenu"))
 local ControlPanel = require(script.Parent:WaitForChild("ControlPanel"))
@@ -21,17 +32,25 @@ local Hud = require(script.Parent:WaitForChild("Hud"))
 local LobbyScreen = require(script.Parent:WaitForChild("LobbyScreen"))
 local MapCamera = require(script.Parent:WaitForChild("MapCamera"))
 local NameLayer = require(script.Parent:WaitForChild("NameLayer"))
+local NukePreview = require(script.Parent:WaitForChild("NukePreview"))
 local TerritoryRenderer = require(script.Parent:WaitForChild("TerritoryRenderer"))
 local RadialMenu = require(script.Parent:WaitForChild("RadialMenu"))
 local SpawnRing = require(script.Parent:WaitForChild("SpawnRing"))
 local TutorialPanel = require(script.Parent:WaitForChild("TutorialPanel"))
 local UnitLayer = require(script.Parent:WaitForChild("UnitLayer"))
 local WorldText = require(script.Parent:WaitForChild("WorldText"))
+local PlayerPanel = require(script.Parent:WaitForChild("PlayerPanel"))
+local EmojiTable = require(script.Parent:WaitForChild("EmojiTable"))
+local ChatModal = require(script.Parent:WaitForChild("ChatModal"))
 
 local player = Players.LocalPlayer
 workspace.CurrentCamera.CameraType = Enum.CameraType.Scriptable
 -- Keys 1..0 are build hotkeys (upstream), not backpack slots.
 game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+-- Our own leaderboard replaces Roblox's player list (it covered the top right).
+game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
+-- No avatar: hide the touch thumbstick and jump button.
+game:GetService("GuiService").TouchControlsEnabled = false
 
 -- GUI ----------------------------------------------------------------------------
 
@@ -68,9 +87,17 @@ local camera = MapCamera.new(background, W, H)
 local renderer = TerritoryRenderer.new(camera, gameMap)
 local nameLayer = NameLayer.new(background, camera)
 local unitLayer = UnitLayer.new(background, camera, gameMap)
+local nukePreview = NukePreview.new(background, camera, gameMap)
 camera.onChanged = function()
 	nameLayer:refresh()
 	unitLayer:render()
+	if nukePreview.data then
+		nukePreview:render()
+	end
+end
+if RunService:IsStudio() then
+	-- Test hook (Studio only), like the server's _G.OpenFront.
+	_G.OpenFrontClient = { camera = camera, renderer = renderer, unitLayer = unitLayer }
 end
 local theme = ColorAllocator.Theme.new()
 
@@ -88,12 +115,17 @@ local matchEndsAt: number? = nil -- set when the match is over
 local function addPlayers(entries)
 	for _, e in entries do
 		roster[e.smallID] = e
-		local c = theme:territoryColor(e.id, e.type)
+		local c = theme:territoryColor(e.id, e.type, e.team)
 		renderer:setPlayerColor(e.smallID, c.rgb, c.border)
 		nameLayer:setPlayer(e.smallID, e.name, c.rgb, e.type == "BOT")
 		unitLayer:setOwnerColor(e.smallID, c.rgb, c.border)
+		local cos = e.cosmetics
+		local pattern = cos and cos.pattern and Shop.byId[cos.pattern]
+		renderer:setPattern(e.smallID, pattern and pattern.rows, pattern and pattern.scale)
+		nameLayer:setNameColor(e.smallID, cos and cos.nameColor)
 		if e.clientID == state.yourClientID then
 			mySmallID = e.smallID
+			renderer:setLocalPlayer(e.smallID)
 		end
 	end
 end
@@ -106,6 +138,25 @@ end)
 for _, u in state.units or {} do
 	unitLayer:apply(u)
 end
+
+-- Railroads (upstream RailroadCache): id -> tiles, drawn by the renderer.
+local railroads = {}
+local function applyRails(remove, add)
+	for _, id in remove or {} do
+		local tiles = railroads[id]
+		if tiles then
+			railroads[id] = nil
+			renderer:addRail(tiles, -1)
+		end
+	end
+	for _, r in add or {} do
+		if railroads[r.id] == nil then
+			railroads[r.id] = r.tiles
+			renderer:addRail(r.tiles, 1)
+		end
+	end
+end
+applyRails(nil, state.rails)
 camera:fit()
 
 local function estimatedTick(): number
@@ -135,7 +186,29 @@ local function myStats()
 end
 
 local myInfo = { disabled = state.disabledUnits or {} } -- latest Net.Me payload
+
+-- Launcher vs local player (NukeTelegraphs.classifyOwner): 0 = self,
+-- 1 = teammate or ally, 2 = everyone else (and everything when spectating).
+local function relationOf(smallID: number): number
+	if mySmallID == nil then
+		return 2
+	elseif smallID == mySmallID then
+		return 0
+	end
+	local me, them = roster[mySmallID], roster[smallID]
+	if me and them and me.team ~= nil and me.team == them.team then
+		return 1
+	end
+	for _, a in myInfo.alliances or {} do
+		if a.other == smallID then
+			return 1
+		end
+	end
+	return 2
+end
+unitLayer.relationOf = relationOf
 local myBordering = nil -- set of smallIDs we share a border with
+local refreshNameIcons -- defined with the name icons below
 
 local buildMenu = BuildMenu.new({
 	gui = gui,
@@ -194,7 +267,7 @@ local function tutorialContext()
 		boatAfloat = unitLayer:hasUnit(mySmallID, "Transport"),
 		botsExist = botsExist,
 		nationsExist = nationsExist,
-		alliancesDisabled = true, -- TODO(port): alliances
+		alliancesDisabled = state.alliancesDisabled == true,
 		allied = myInfo.allied == true,
 		gold = if mine then mine.gold else 0,
 		costs = costs,
@@ -212,7 +285,7 @@ local function tutorialContext()
 		siloDisabled = disabled["Missile Silo"] == true,
 		silos = has("Missile Silo"),
 		atomDisabled = disabled["Atom Bomb"] == true,
-		siloReady = false, -- TODO(port): silo cooldowns with nukes
+		siloReady = unitLayer:siloReady(mySmallID),
 		atomInFlight = unitLayer:hasUnit(mySmallID, "Atom Bomb"),
 		hydrogenDisabled = disabled["Hydrogen Bomb"] == true,
 		mirvDisabled = disabled.MIRV == true,
@@ -250,8 +323,8 @@ local tutorial = TutorialPanel.new({
 	hasCoast = function()
 		return myInfo.hasCoast
 	end,
-	isFriendly = function(_smallID)
-		return false -- TODO(port): alliances / teams
+	isFriendly = function(smallID)
+		return relationOf(smallID) == 1
 	end,
 	setHighlight = function(target)
 		controlPanel:setHighlight(target)
@@ -302,6 +375,97 @@ local eventsDisplay = EventsDisplay.new({
 	focusPlayer = focusPlayer,
 	focusUnit = focusUnit,
 	visible = hudVisible,
+	sendIntent = function(t)
+		Net.Intent:FireServer(t)
+	end,
+	alive = function()
+		local mine = myStats()
+		return mine ~= nil and mine.tiles > 0
+	end,
+})
+
+-- uiState.rocketDirectionUp (PlayerPanel toggle, sent with nuke placements).
+local rocketUp = true
+buildMenu.deps.rocketUp = function()
+	return rocketUp
+end
+buildMenu.deps.renderer = renderer
+
+-- BuildPreviewController.updateNukeTrajectoryPreview: arc from the nearest
+-- ready silo (Manhattan, like PlayerImpl.nukeSpawn) to the hovered tile,
+-- with every SAM that would engage (not ours, not a teammate or ally).
+local NUKE_PREVIEW = { ["Atom Bomb"] = true, ["Hydrogen Bomb"] = true }
+local function updateNukePreview(p: Vector2?)
+	local sel = buildMenu.selected
+	local tile = if p then tileAtScreen(p) else nil
+	local best, bestD = nil, math.huge
+	if sel and NUKE_PREVIEW[sel] and tile and mySmallID then
+		local dx, dy = gameMap:x(tile), gameMap:y(tile)
+		for _, e in unitLayer.units do
+			if e.ownerID == mySmallID and e.unitType == "Missile Silo" and not e.underConstruction
+				and (e.missileTimers == nil or #e.missileTimers < (e.level or 1)) then
+				local d = math.abs(gameMap:x(e.pos) - dx) + math.abs(gameMap:y(e.pos) - dy)
+				if d < bestD then
+					best, bestD = e, d
+				end
+			end
+		end
+	end
+	if best == nil then
+		if nukePreview.data then
+			nukePreview:set(nil)
+		end
+		return
+	end
+	local sams = {}
+	for _, e in unitLayer.units do
+		if e.unitType == "SAM Launcher" and e.ownerID ~= mySmallID and relationOf(e.ownerID) ~= 1 then
+			table.insert(sams, { x = gameMap:x(e.pos), y = gameMap:y(e.pos), r = NukePreview.samRange(e.level or 1) })
+		end
+	end
+	nukePreview:set({
+		srcX = gameMap:x(best.pos),
+		srcY = gameMap:y(best.pos),
+		dstX = gameMap:x(tile),
+		dstY = gameMap:y(tile),
+		directionUp = rocketUp,
+		sams = sams,
+		blocked = gameMap:isImpassable(tile),
+	})
+end
+local emojiTable = EmojiTable.new(gui)
+local function onAllianceRequestSent(smallID: number)
+	-- Upstream shows "request sent" unless it accepts their pending request.
+	for _, id in (myInfo and myInfo.requestsIn) or {} do
+		if id == smallID then
+			return
+		end
+	end
+	eventsDisplay:add({ type = "Message", message = "events_display.alliance_request_sent", params = { name = playerName(smallID) or "?" }, messageType = 15, focusPlayerID = smallID, keepNames = true })
+end
+local playerPanel = PlayerPanel.new({
+	gui = gui,
+	net = Net,
+	emojiTable = emojiTable,
+	rocketUp = function()
+		return rocketUp
+	end,
+	setRocketUp = function(v)
+		rocketUp = v
+	end,
+	onAllianceRequestSent = function(smallID)
+		onAllianceRequestSent(smallID)
+	end,
+	players = function()
+		local list = {}
+		for smallID, e in roster do
+			local s = stats[smallID]
+			if s and s.tiles > 0 and smallID ~= mySmallID then
+				table.insert(list, { smallID = smallID, name = e.name, tiles = s.tiles, color = unitLayer.colors[smallID] })
+			end
+		end
+		return list
+	end,
 })
 
 local attacksDisplay = AttacksDisplay.new({
@@ -355,6 +519,15 @@ local radialMenu = RadialMenu.new({
 	ratio = function()
 		return controlPanel.ratio
 	end,
+	playerPanel = playerPanel,
+	onAllianceRequestSent = onAllianceRequestSent,
+	rocketUp = function()
+		return rocketUp
+	end,
+	myTroops = function()
+		local mine = myStats()
+		return mine and mine.troops
+	end,
 })
 
 local function refreshPanelVisibility()
@@ -382,6 +555,8 @@ Net.Me.OnClientEvent:Connect(function(info)
 	worldText:setAttacks(gameMap, info.outgoing, info.incoming)
 	controlPanel:setInfo(info)
 	buildMenu:setInfo(info)
+	eventsDisplay:updateAlliances(info)
+	refreshNameIcons()
 end)
 
 Net.Names.OnClientEvent:Connect(function(buf)
@@ -402,6 +577,72 @@ Net.Tick.OnClientEvent:Connect(function(buf)
 	end)
 	tickBase, tickClock = tick, os.clock()
 end)
+
+-- Name status icons (PlayerIcons.ts): crown, traitor, disconnected, alliance,
+-- alliance request, target, embargo, nuke; then the latest emoji for us.
+local traitors, disconnected = {}, {}
+local emojis = {} -- sender smallID -> { message, recipient, tick }
+local EMOJI_DURATION = 50 -- Config.emojiMessageDuration
+function refreshNameIcons()
+	if mySmallID == nil and next(roster) == nil then
+		return
+	end
+	local me = mySmallID
+	local info = myInfo or {}
+	local function set(list)
+		local out = {}
+		for _, id in list or {} do
+			out[id] = true
+		end
+		return out
+	end
+	local allied, asking, targets, embargoes = {}, set(info.requestsIn), set(info.targets), set(info.embargoes)
+	for _, a in info.alliances or {} do
+		allied[a.other] = true
+	end
+	local first, best = nil, -1
+	for smallID, s in stats do
+		if s.tiles > best then
+			first, best = smallID, s.tiles
+		end
+	end
+	local nukeOwners = unitLayer:nukeOwners(renderer, me)
+	local now = tickBase + (os.clock() - tickClock) * 10
+	for smallID in roster do
+		local icons = {}
+		if smallID == first and best > 0 then
+			table.insert(icons, { icon = "crown" })
+		end
+		if traitors[smallID] then
+			table.insert(icons, { icon = "traitor", color = Color3.fromHex("#ef4444") })
+		end
+		if disconnected[smallID] then
+			table.insert(icons, { icon = "disconnected" })
+		end
+		if allied[smallID] then
+			table.insert(icons, { icon = "alliance", color = Color3.fromHex("#4ade80") })
+		end
+		if asking[smallID] then
+			table.insert(icons, { icon = "allianceRequest" })
+		end
+		if targets[smallID] then
+			table.insert(icons, { icon = "targetRed" })
+		end
+		if embargoes[smallID] then
+			table.insert(icons, { icon = "embargo" })
+		end
+		local nuke = nukeOwners[smallID]
+		if nuke and smallID ~= me then
+			table.insert(icons, { icon = if nuke == "me" then "nukeRed" else "atomBomb", color = if nuke == "me" then nil else Color3.new(1, 1, 1) })
+		end
+		local e = emojis[smallID]
+		local emoji = nil
+		if e and now - e.tick < EMOJI_DURATION and (e.recipient == 0 or e.recipient == me) then
+			emoji = e.message
+		end
+		nameLayer:setIcons(smallID, icons, emoji, targets[smallID] == true)
+	end
+end
 
 local function refreshBoard()
 	local rows = {}
@@ -449,7 +690,18 @@ Net.Stats.OnClientEvent:Connect(function(buf)
 		elseif haveSpawned and not inSpawnPhase and not shownDeath and not gameOver then
 			-- Upstream WinModal: shown once when our player is no longer alive.
 			shownDeath = true
-			hud:showModal("You died", "Spectate")
+			eventsDisplay:refresh()
+			-- The server stops sending Me once we are dead (and drops our
+			-- alliances): forget our diplomatic state so no stale icons remain.
+			myInfo.alliances, myInfo.requestsIn, myInfo.targets, myInfo.embargoes = {}, {}, {}, {}
+			refreshNameIcons()
+			if state.canMatchmake then
+				hud:showModal("You died", "Spectate", false, "Find new match", function()
+					Net.Intent:FireServer({ type = "find_match" })
+				end)
+			else
+				hud:showModal("You died", "Spectate")
+			end
 		end
 	end
 	refreshPanelVisibility()
@@ -470,6 +722,70 @@ Net.Event.OnClientEvent:Connect(function(evt)
 		gui:Destroy()
 		fresh.Parent = script.Parent
 		script:Destroy()
+	elseif evt.type == "AllianceRequest" then
+		eventsDisplay:allianceRequest(evt.requestor, evt.duration)
+	elseif evt.type == "AllianceRequestResolved" then
+		eventsDisplay:allianceRequestResolved(evt.requestor)
+	elseif evt.type == "AllianceGone" or evt.type == "AllianceExtended" then
+		eventsDisplay:allianceGone(evt.allianceID)
+	elseif evt.type == "Flags" then
+		traitors, disconnected = {}, {}
+		for _, id in evt.traitors do
+			traitors[id] = true
+		end
+		for _, id in evt.disconnected do
+			disconnected[id] = true
+		end
+		refreshNameIcons()
+	elseif evt.type == "Emoji" then
+		emojis[evt.sender] = { message = evt.message, recipient = evt.recipient, tick = evt.tick }
+		refreshNameIcons()
+		task.delay(EMOJI_DURATION / 10 + 0.2, refreshNameIcons)
+	elseif evt.type == "Chat" then
+		-- DisplayChatEvent: "From X: msg" / "Sent X: msg".
+		local text = ChatModal.phraseText(evt.category, evt.key) or evt.key
+		if evt.target then
+			local target = evt.target
+			text = string.gsub(text, "%[P1%]", function()
+				return target
+			end)
+		end
+		eventsDisplay:add({
+			type = "Message",
+			message = (if evt.isFrom then "From " else "Sent ") .. (evt.other or "") .. ": " .. text,
+			raw = true,
+			messageType = 20,
+			focusPlayerID = evt.otherSmallID,
+		})
+	elseif evt.type == "MatchInProgress" then
+		-- Joined a public server mid-match: offer a lobby about to start and go
+		-- there automatically unless the player chooses to watch.
+		local cancelled = false
+		hud:showModal("Match in progress", "Watch this match", false, "Find new match", function()
+			cancelled = true
+			Net.Intent:FireServer({ type = "find_match" })
+		end)
+		local modalButton = hud.modalButton
+		local conn
+		conn = modalButton.Activated:Connect(function()
+			cancelled = true
+			conn:Disconnect()
+		end)
+		task.spawn(function()
+			for left = evt.autoSeconds or 8, 1, -1 do
+				if cancelled then
+					return
+				end
+				hud.modalTitle.Text = Lang.t("Match in progress — new match in {left} s", { left = left })
+				task.wait(1)
+			end
+			if not cancelled then
+				hud.modal.Visible = false
+				Net.Intent:FireServer({ type = "find_match" })
+			end
+		end)
+	elseif evt.type == "Rail" then
+		applyRails(evt.remove, evt.add)
 	elseif evt.type == "GoldGain" then
 		controlPanel:goldGain(evt.gold)
 	elseif evt.type == "Message" or evt.type == "Incoming" then
@@ -486,10 +802,13 @@ Net.Event.OnClientEvent:Connect(function(evt)
 		worldText:bonus(gameMap:x(evt.tile), gameMap:y(evt.tile), evt.gold)
 	elseif evt.type == "Win" then
 		gameOver = true
+		local myTeam = mySmallID and roster[mySmallID] and roster[mySmallID].team
 		if evt.winnerSmallID ~= nil and evt.winnerSmallID == mySmallID then
 			hud:showModal("You Won!", "OK", true)
+		elseif evt.winnerSmallID == nil and myTeam ~= nil and evt.winnerName == myTeam then
+			hud:showModal("Your team won!", "OK", true)
 		else
-			hud:showModal(`{evt.winnerName} has won!`, "OK")
+			hud:showModal(Lang.t("{name} has won!", { name = evt.winnerName }), "OK")
 		end
 	end
 end)
@@ -515,7 +834,8 @@ camera.onClick = function(p: Vector2)
 		return
 	end
 	if inSpawnPhase then
-		if gameMap:isLand(tile) and not gameMap:isImpassable(tile) and renderer:ownerAt(tile) == 0 then
+		-- Random spawn: the server places us; no manual pick (upstream disables it).
+		if not state.randomSpawn and gameMap:isLand(tile) and not gameMap:isImpassable(tile) and renderer:ownerAt(tile) == 0 then
 			Net.Intent:FireServer({ type = "spawn", tile = tile })
 		end
 		return
@@ -564,8 +884,39 @@ camera.onRightClick = function(p: Vector2)
 	end
 end
 
+-- Touch tap (WarshipSelectionController.onTouch): spawn during the spawn
+-- phase, place a ghost structure, water taps go to warships, land taps open
+-- the radial menu (attack is its centre button).
+camera.onTap = function(p: Vector2)
+	if gameOver or mySmallID == nil then
+		return
+	end
+	if radialMenu:isOpen() or (radialMenu.closedAt and os.clock() - radialMenu.closedAt < 0.3) then
+		return
+	end
+	local tile = tileAtScreen(p)
+	if tile == nil then
+		return
+	end
+	if buildMenu.selected then
+		buildMenu:hover(p)
+		camera.onClick(p)
+		return
+	end
+	if inSpawnPhase or gameMap:isWater(tile) then
+		camera.onClick(p)
+		return
+	end
+	if selectedWarship then
+		camera.onClick(p)
+		return
+	end
+	camera.onRightClick(p)
+end
+
 camera.onHover = function(p: Vector2)
 	buildMenu:hover(p)
+	updateNukePreview(p)
 	local tile = tileAtScreen(p)
 	if tile == nil then
 		hud:setHover(nil)
@@ -575,11 +926,28 @@ camera.onHover = function(p: Vector2)
 	local e = roster[owner]
 	if e then
 		local s = stats[owner]
-		hud:setHover(if s then `{e.name}  ·  {Format.renderTroops(s.troops)} troops` else e.name)
+		hud:setHover(if s then Lang.t("{name}  ·  {troops} troops", { name = e.name, troops = Format.renderTroops(s.troops) }) else e.name)
 	elseif gameMap:isWater(tile) then
 		hud:setHover(if gameMap:isOcean(tile) then "Ocean" else "Lake")
 	else
-		hud:setHover(`Unclaimed {terrainNames[gameMap:terrainType(tile)]}`)
+		hud:setHover(Lang.t("Unclaimed {terrain}", { terrain = Lang.t(terrainNames[gameMap:terrainType(tile)] or "?") }))
+	end
+end
+
+if RunService:IsStudio() then
+	-- Studio test hook: read-only view for automated players (soak tests).
+	_G.OpenFrontClient.buildMenu = buildMenu
+	_G.OpenFrontClient.gameMap = gameMap
+	_G.OpenFrontClient.snapshot = function()
+		return {
+			mySmallID = mySmallID,
+			inSpawnPhase = inSpawnPhase,
+			gameOver = gameOver,
+			roster = roster,
+			stats = stats,
+			myInfo = myInfo,
+			bordering = myBordering,
+		}
 	end
 end
 
@@ -587,6 +955,9 @@ end
 
 RunService.RenderStepped:Connect(function()
 	renderer:flush()
+	if nukePreview.data and not NUKE_PREVIEW[buildMenu.selected or ""] then
+		nukePreview:set(nil)
+	end
 	unitLayer:render()
 	tutorial:renderOverlays()
 	worldText:render()

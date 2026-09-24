@@ -90,6 +90,7 @@ function GameImpl.new(humans, nations, map, miniGameMap, config, teamGameSpawnAr
 	}, GameImpl)
 
 	self._unitGrid = UnitGrid.new(map)
+	self._railNetwork = require(script.Parent.RailNetwork).new(self)
 	self._unitMap = {} -- id -> unit
 	self._waterManager = WaterManager.new(map, miniGameMap, config:disableNavMesh())
 	if config:gameConfig().gameMode == GameMode.Team then
@@ -100,8 +101,8 @@ function GameImpl.new(humans, nations, map, miniGameMap, config, teamGameSpawnAr
 end
 
 function GameImpl:_populateTeams()
-	-- TODO(port): TeamAssignment.resolveTeamsList / assignTeams.
-	error("TODO(port): team games")
+	local TeamAssignment = require(script.Parent.TeamAssignment)
+	self._playerTeams = TeamAssignment.resolveTeamsList(self._config:playerTeams(), #self._humans + #self._nations)
 end
 
 function GameImpl:_addPlayers()
@@ -123,7 +124,21 @@ function GameImpl:_addPlayers()
 		end
 		return
 	end
-	error("TODO(port): team assignment")
+	-- Team mode
+	local TeamAssignment = require(script.Parent.TeamAssignment)
+	local allPlayers = table.clone(self._humans)
+	for _, n in self._nations do
+		table.insert(allPlayers, n.playerInfo)
+	end
+	local pt = self._config:playerTeams()
+	local isDuosTriosQuads = pt == GameTypes.Duos or pt == GameTypes.Trios or pt == GameTypes.Quads
+	for _, row in TeamAssignment.assignTeams(allPlayers, self._playerTeams, isDuosTriosQuads) do
+		if row.team == "kicked" then
+			warn(`Player {row.player.name} was kicked from team`)
+			continue
+		end
+		self:addPlayer(row.player, row.team)
+	end
 end
 
 -- Map & ownership -----------------------------------------------------------------
@@ -253,8 +268,32 @@ end
 
 -- units() / units(type, ...) / units({types}) across all players, in player order.
 function GameImpl:units(...: any)
-	local out = {}
 	local n = select("#", ...)
+	-- Single-type queries (nations scan transports every tick) are memoised
+	-- on the units version, which every add / remove / owner change bumps, so
+	-- the players-then-units order is unchanged. Callers get a copy.
+	if n == 1 and type((...)) == "string" then
+		local unitType = ...
+		local cache = self._unitsByTypeCache
+		if cache == nil or cache.version ~= self._unitsVersion then
+			cache = { version = self._unitsVersion, lists = {} }
+			self._unitsByTypeCache = cache
+		end
+		local list = cache.lists[unitType]
+		if list == nil then
+			list = {}
+			for _, p in self._playerList do
+				for _, u in p:units() do
+					if u:type() == unitType then
+						table.insert(list, u)
+					end
+				end
+			end
+			cache.lists[unitType] = list
+		end
+		return table.clone(list)
+	end
+	local out = {}
 	local wanted = nil
 	if n > 0 then
 		local first = ...
@@ -285,11 +324,21 @@ function GameImpl:units(...: any)
 	return out
 end
 
--- Level-weighted count of one unit type across every player.
+-- Level-weighted count over all players. Memoised on the units version
+-- (bumped on add / remove / level change): SAMs ask every tick.
 function GameImpl:unitCount(unitType: string): number
-	local total = 0
-	for _, p in self._playerList do
-		total += p:unitCount(unitType)
+	local cache = self._unitCountCache
+	if cache == nil or cache.version ~= self._unitsVersion then
+		cache = { version = self._unitsVersion, counts = {} }
+		self._unitCountCache = cache
+	end
+	local total = cache.counts[unitType]
+	if total == nil then
+		total = 0
+		for _, p in self._playerList do
+			total += p:unitCount(unitType)
+		end
+		cache.counts[unitType] = total
 	end
 	return total
 end
@@ -322,7 +371,9 @@ function GameImpl:removeUnit(u)
 	self._unitsVersion += 1
 	self._unitGrid:removeUnit(u)
 	self._unitMap[u:id()] = nil
-	-- TODO(port): rail network station removal (factories).
+	if u:hasTrainStation() then
+		self._railNetwork:removeStation(u)
+	end
 end
 
 function GameImpl:updateUnitTile(u)
@@ -336,6 +387,10 @@ end
 
 function GameImpl:nations()
 	return self._nations
+end
+
+function GameImpl:railNetwork()
+	return self._railNetwork
 end
 
 -- Alliances -------------------------------------------------------------------------

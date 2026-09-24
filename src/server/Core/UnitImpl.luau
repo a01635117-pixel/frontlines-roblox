@@ -159,6 +159,13 @@ function UnitImpl:toUpdate()
 		-- replication only (UnitPass flags)
 		targetUnitId = if self._targetUnit then self._targetUnit:id() else nil,
 		warshipRetreating = if self._warshipState then self._warshipState.state ~= "patrolling" else nil,
+		trainType = self._trainType,
+		loaded = self._loaded,
+		-- replication only: reload bars (launch ticks of missiles still reloading)
+		missileTimers = if #self._missileTimerQueue > 0 then table.clone(self._missileTimerQueue) else nil,
+		reloadTicks = if #self._missileTimerQueue == 0 then nil
+			elseif self._type == "SAM Launcher" then self.mg:config():SAMCooldown()
+			else self.mg:config():SiloCooldown(),
 	}
 end
 

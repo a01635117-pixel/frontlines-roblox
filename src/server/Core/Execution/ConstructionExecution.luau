@@ -120,7 +120,8 @@ function ConstructionExecution:_completeConstruction()
 		local SAMExecutions = require(script.Parent.SAMExecutions)
 		mg:addExecution(SAMExecutions.SAMLauncherExecution.new(self.player, nil, self.structure))
 	elseif t == UnitType.Factory then
-		warn("TODO(port): FactoryExecution")
+		local FactoryExecution = require(script.Parent.TrainExecutions).FactoryExecution
+		mg:addExecution(FactoryExecution.new(self.structure))
 	else
 		warn(`unit type {t} cannot be constructed`)
 	end

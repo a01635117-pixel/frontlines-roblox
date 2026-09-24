@@ -7,6 +7,8 @@
 --     territoryAlpha (0.588)
 --   * border tiles (any 4-neighbour with a different owner): the player's
 --     border colour (colord .darken(0.125)), opaque
+--   * railroads (RailroadPass line mode, one tile wide): the tile owner's
+--     border colour, white for the local player, grey on unowned land
 --
 -- Tile state is the simulation's u16 per tile (bits 0-11 owner smallID).
 -- Changing a tile dirties it and its 4 neighbours (their border status may
@@ -34,6 +36,10 @@ local function pack(r: number, g: number, b: number): number
 	return r + g * 0x100 + b * 0x10000 + 0xff000000
 end
 
+-- railroad.frag.glsl: vec3(0.75) off-territory, uLocalRailColor (white) for ours.
+local RAIL_UNOWNED = pack(191, 191, 191)
+local RAIL_LOCAL = pack(255, 255, 255)
+
 -- camera: MapCamera the image tiles are registered with.
 function TerritoryRenderer.new(camera, gameMap)
 	local W, H = gameMap:width(), gameMap:height()
@@ -47,6 +53,8 @@ function TerritoryRenderer.new(camera, gameMap)
 		H = H,
 		terrain = terrainRGBA,
 		state = buffer.create(n * 2),
+		rail = buffer.create(n), -- railroads covering each tile
+		localSmallID = 0,
 		fill = {}, -- smallID -> { r, g, b } (saturated, pre-multiplied by alpha)
 		border = {}, -- smallID -> packed RGBA
 		chunks = {},
@@ -105,6 +113,37 @@ function TerritoryRenderer:setPlayerColor(smallID: number, rgb: { number }, bord
 	b = luma + (b - luma) * TERRITORY_SATURATION
 	self.fill[smallID] = { r * 255 * TERRITORY_ALPHA, g * 255 * TERRITORY_ALPHA, b * 255 * TERRITORY_ALPHA }
 	self.border[smallID] = pack(border[1], border[2], border[3])
+	-- Pattern secondary fill: the border colour, desaturated and blended like
+	-- the territory fill (PlayerView.territoryColor(tile) for !isPrimary).
+	local br, bg, bb = border[1] / 255, border[2] / 255, border[3] / 255
+	local bl = br * 0.299 + bg * 0.587 + bb * 0.114
+	br = bl + (br - bl) * TERRITORY_SATURATION
+	bg = bl + (bg - bl) * TERRITORY_SATURATION
+	bb = bl + (bb - bl) * TERRITORY_SATURATION
+	self.fill2 = self.fill2 or {}
+	self.fill2[smallID] = { br * 255 * TERRITORY_ALPHA, bg * 255 * TERRITORY_ALPHA, bb * 255 * TERRITORY_ALPHA }
+	self.fullRedraw = true
+end
+
+-- Territory pattern (cosmetic, PatternDecoder): rows of "#" = secondary
+-- cells, each covering 2^scale tiles; nil clears it.
+function TerritoryRenderer:setPattern(smallID: number, rows: { string }?, scale: number?)
+	self.patterns = self.patterns or {}
+	if rows == nil then
+		if self.patterns[smallID] then
+			self.patterns[smallID] = nil
+			self.fullRedraw = true
+		end
+		return
+	end
+	local h, w = #rows, #rows[1]
+	local bits = table.create(w * h, false)
+	for y, row in rows do
+		for x = 1, w do
+			bits[(y - 1) * w + x] = string.sub(row, x, x) == "#"
+		end
+	end
+	self.patterns[smallID] = { w = w, h = h, scale = scale or 0, bits = bits }
 	self.fullRedraw = true
 end
 
@@ -145,14 +184,75 @@ function TerritoryRenderer:setState(tile: number, s: number)
 	end
 end
 
+-- Add (delta 1) or remove (delta -1) one railroad's tiles.
+function TerritoryRenderer:addRail(tiles: { number }, delta: number)
+	local rail = self.rail
+	for _, t in tiles do
+		local v = math.clamp(buffer.readu8(rail, t) + delta, 0, 255)
+		buffer.writeu8(rail, t, v)
+		if not self.fullRedraw then
+			self:_markDirty(t)
+		end
+	end
+end
+
+function TerritoryRenderer:setLocalPlayer(smallID: number)
+	if self.localSmallID ~= smallID then
+		self.localSmallID = smallID
+		self.fullRedraw = true
+	end
+end
+
 -- Replace the whole state (snapshot on join).
 function TerritoryRenderer:loadState(stateBuf: buffer)
 	buffer.copy(self.state, 0, stateBuf, 0, math.min(buffer.len(stateBuf), buffer.len(self.state)))
 	self.fullRedraw = true
 end
 
+-- Build-mode ghost railroads (RailroadPass ghost texture): planned paths drawn
+-- semi-transparent white, existing rails the station would snap to in gold.
+local GHOST_PATH, GHOST_OVERLAP = { 255, 255, 255, 0.6 }, { 255, 214, 90, 0.85 }
+function TerritoryRenderer:setGhostRails(paths: { { number } }?, overlapping: { number }?)
+	local old = self.ghostRail
+	local new = {}
+	for _, path in paths or {} do
+		for _, t in path do
+			new[t] = GHOST_PATH
+		end
+	end
+	for _, t in overlapping or {} do
+		new[t] = GHOST_OVERLAP
+	end
+	self.ghostRail = if next(new) then new else nil
+	if not self.fullRedraw then
+		for t in old or {} do
+			if new[t] == nil then
+				self:_markDirty(t)
+			end
+		end
+		for t, v in new do
+			if old == nil or old[t] ~= v then
+				self:_markDirty(t)
+			end
+		end
+	end
+end
+
 -- Packed RGBA for one tile.
 function TerritoryRenderer:_pixel(tile: number): number
+	local ghost = self.ghostRail and self.ghostRail[tile]
+	if ghost then
+		local c, a = self:_basePixel(tile), ghost[4]
+		return pack(
+			math.floor(band(c, 0xff) * (1 - a) + ghost[1] * a + 0.5),
+			math.floor(band(c // 0x100, 0xff) * (1 - a) + ghost[2] * a + 0.5),
+			math.floor(band(c // 0x10000, 0xff) * (1 - a) + ghost[3] * a + 0.5)
+		)
+	end
+	return self:_basePixel(tile)
+end
+
+function TerritoryRenderer:_basePixel(tile: number): number
 	local state = self.state
 	local raw = readu16(state, tile * 2)
 	if band(raw, FALLOUT_BIT) ~= 0 then
@@ -165,6 +265,14 @@ function TerritoryRenderer:_pixel(tile: number): number
 		return pack(math.floor((0.05 + n) * 255 + 0.5), math.floor((0.55 + n) * 255 + 0.5), math.floor((0.07 + n) * 255 + 0.5))
 	end
 	local owner = band(raw, OWNER_MASK)
+	if buffer.readu8(self.rail, tile) > 0 then
+		if owner == 0 then
+			return RAIL_UNOWNED
+		elseif owner == self.localSmallID then
+			return RAIL_LOCAL
+		end
+		return self.border[owner] or RAIL_UNOWNED
+	end
 	if owner == 0 then
 		return readu32(self.terrain, tile * 4)
 	end
@@ -178,6 +286,14 @@ function TerritoryRenderer:_pixel(tile: number): number
 		return self.border[owner] or 0xff000000
 	end
 	local f = self.fill[owner]
+	local pat = self.patterns and self.patterns[owner]
+	if pat then
+		local px = (x // (2 ^ pat.scale)) % pat.w
+		local py = ((tile // W) // (2 ^ pat.scale)) % pat.h
+		if pat.bits[py * pat.w + px + 1] then
+			f = self.fill2[owner] or f
+		end
+	end
 	local t = readu32(self.terrain, tile * 4)
 	if not f then
 		return t

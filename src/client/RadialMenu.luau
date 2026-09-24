@@ -5,12 +5,13 @@
 --   * main ring (radius 40..95, 4 slots, first slot centred at the top,
 --     padAngle 0.03, opacity 0.82 / 0.4 disabled):
 --       own territory: info, delete, alliance, build
---       elsewhere:     info, boat, alliance, attack
+--       elsewhere:     info, boat | break alliance, request | extend
+--                      alliance, attack | donate gold (friendly)
 --   * submenus (radius 75..140, main ring shrinks to 0.65): build → the
 --     structures, attack → nukes + warship; each leaf builds or upgrades
 -- Ring sectors are baked into EditableImages (cropped to their bounding box)
 -- since Roblox UI has no arc primitive; hit-testing is done in polar space.
--- TODO(port): player info panel, alliances, bulk-amount sub-submenus.
+-- TODO(port): bulk-amount sub-submenus.
 
 local AssetService = game:GetService("AssetService")
 local TweenService = game:GetService("TweenService")
@@ -28,6 +29,9 @@ local COLORS = {
 	boat = Color3.fromHex("#2a82c9"),
 	disabled = Color3.fromHex("#94a3b8"),
 	ally = Color3.fromHex("#4ade80"),
+	breakAlly = Color3.fromHex("#dc2626"),
+	breakAllyNoDebuff = Color3.fromHex("#d97706"),
+	donateGold = Color3.fromHex("#f59e0b"),
 	delete = Color3.fromHex("#ef4444"),
 	info = Color3.fromHex("#475569"),
 	attack = Color3.fromHex("#ef4444"),
@@ -266,7 +270,7 @@ function RadialMenu:_unitItems(defs, color)
 			disabled = not enabled,
 			tooltip = tooltip,
 			action = function()
-				self.deps.net.Intent:FireServer({ type = "place", unit = def.unit, tile = self.tile })
+				self.deps.net.Intent:FireServer({ type = "place", unit = def.unit, tile = self.tile, rocketDirectionUp = self.deps.rocketUp == nil or self.deps.rocketUp() })
 				self:close()
 			end,
 		})
@@ -278,10 +282,35 @@ function RadialMenu:_rootItems()
 	local info = self.info
 	local me = self.deps.mySmallID()
 	local own = me ~= nil and info.ownerSmallID == me
+	local interaction = info.interaction
 	local items = {
-		-- TODO(port): PlayerPanel (player info), until then disabled.
-		{ id = "info", icon = "info", color = COLORS.info, disabled = true },
+		{
+			id = "info",
+			icon = "info",
+			color = COLORS.info,
+			disabled = info.ownerSmallID == 0 or info.inSpawnPhase,
+			action = function()
+				local tile = self.tile
+				self:close()
+				self.deps.playerPanel:show(tile)
+			end,
+		},
 	}
+	local function allyRequest()
+		return {
+			id = "ally",
+			icon = "alliance",
+			color = COLORS.ally,
+			disabled = not (interaction and interaction.canSendAllianceRequest),
+			action = function()
+				self.deps.net.Intent:FireServer({ type = "alliance_request", target = info.ownerSmallID })
+				if self.deps.onAllianceRequestSent then
+					self.deps.onAllianceRequestSent(info.ownerSmallID)
+				end
+				self:close()
+			end,
+		}
+	end
 	if own then
 		table.insert(items, {
 			id = "delete",
@@ -294,7 +323,7 @@ function RadialMenu:_rootItems()
 				self:close()
 			end,
 		})
-		table.insert(items, { id = "ally", icon = "alliance", color = COLORS.ally, disabled = true })
+		table.insert(items, allyRequest())
 		table.insert(items, {
 			id = "build",
 			icon = "build",
@@ -305,26 +334,77 @@ function RadialMenu:_rootItems()
 			end,
 		})
 	else
-		table.insert(items, {
-			id = "boat",
-			icon = "boat",
-			color = COLORS.boat,
-			disabled = not info.canBoat,
-			action = function()
-				self.deps.net.Intent:FireServer({ type = "boat_at", tile = self.tile, ratio = self.deps.ratio() })
-				self:close()
-			end,
-		})
-		table.insert(items, { id = "ally", icon = "alliance", color = COLORS.ally, disabled = true })
-		table.insert(items, {
-			id = "attack",
-			icon = "swordWhite",
-			color = COLORS.attack,
-			disabled = info.inSpawnPhase,
-			submenu = function()
-				return self:_unitItems(ATTACK_ITEMS, COLORS.attack)
-			end,
-		})
+		local isAllied = interaction and interaction.isAllied
+		local disconnected = interaction and interaction.isDisconnected
+		if isAllied and not disconnected then
+			table.insert(items, {
+				id = "break",
+				icon = "traitor",
+				color = if info.ownerIsTraitor or disconnected then COLORS.breakAllyNoDebuff else COLORS.breakAlly,
+				disabled = not interaction.canBreakAlliance,
+				action = function()
+					self.deps.net.Intent:FireServer({ type = "break_alliance", target = info.ownerSmallID })
+					self:close()
+				end,
+			})
+		else
+			table.insert(items, {
+				id = "boat",
+				icon = "boat",
+				color = COLORS.boat,
+				disabled = not info.canBoat,
+				action = function()
+					self.deps.net.Intent:FireServer({ type = "boat_at", tile = self.tile, ratio = self.deps.ratio() })
+					self:close()
+				end,
+			})
+		end
+		local ext = interaction and interaction.allianceInfo
+		if ext and ext.inExtensionWindow then
+			table.insert(items, {
+				id = "extend",
+				icon = "alliance",
+				color = COLORS.ally,
+				disabled = not ext.canExtend,
+				action = function()
+					self.deps.net.Intent:FireServer({ type = "alliance_extend", target = info.ownerSmallID })
+					self:close()
+				end,
+			})
+		else
+			table.insert(items, allyRequest())
+		end
+		-- Friendly, connected target without buildable attacks: donate gold.
+		local hasBuildableAttacks = false
+		for _, bu in info.units or {} do
+			if (bu.unit == "Atom Bomb" or bu.unit == "Hydrogen Bomb" or bu.unit == "MIRV" or bu.unit == "Warship") and bu.canBuild then
+				hasBuildableAttacks = true
+				break
+			end
+		end
+		if interaction and interaction.isFriendly and not disconnected and not hasBuildableAttacks then
+			table.insert(items, {
+				id = "donateGold",
+				icon = "donateGold",
+				color = COLORS.donateGold,
+				disabled = info.inSpawnPhase or not interaction.canDonateGold,
+				action = function()
+					local tile = self.tile
+					self:close()
+					self.deps.playerPanel:openSendGoldAt(tile)
+				end,
+			})
+		else
+			table.insert(items, {
+				id = "attack",
+				icon = "swordWhite",
+				color = COLORS.attack,
+				disabled = info.inSpawnPhase,
+				submenu = function()
+					return self:_unitItems(ATTACK_ITEMS, COLORS.attack)
+				end,
+			})
+		end
 	end
 	return items
 end
@@ -397,6 +477,9 @@ function RadialMenu:_setCenter(back: boolean)
 	end
 	self.back = back
 	local attackOk = self.info and (self.info.canAttack or (self.info.inSpawnPhase and self.info.ownerSmallID == 0))
+	if self.info and not self.info.inSpawnPhase and self:_friendlyTarget() then
+		attackOk = self.info.interaction.canDonateTroops
+	end
 	local iconName = if back then "back" else "swordWhite"
 	local size = if back then CENTER_ICON * 0.8 else CENTER_ICON
 	local icon = Icons.label(self.center, iconName, size, { white = true })
@@ -406,6 +489,12 @@ function RadialMenu:_setCenter(back: boolean)
 	self.centerIcon = icon
 	self.center.BackgroundColor3 = if back or attackOk then COLORS.center else COLORS.disabledGrey
 	icon.ImageTransparency = if back or attackOk then 0 else 0.5
+end
+
+-- isFriendlyTarget && !isDisconnectedTarget (RadialMenuElements).
+function RadialMenu:_friendlyTarget(): boolean
+	local i = self.info and self.info.interaction
+	return i ~= nil and i.isFriendly and not i.isDisconnected
 end
 
 -- Hit testing ------------------------------------------------------------------------------------
@@ -488,6 +577,13 @@ function RadialMenu:_click(p: Vector2)
 		if info.inSpawnPhase then
 			if info.ownerSmallID == 0 then
 				self.deps.net.Intent:FireServer({ type = "spawn", tile = self.tile })
+				self:close()
+			end
+		elseif self:_friendlyTarget() then
+			local interaction = info.interaction
+			local troops = math.floor(self.deps.ratio() * (self.deps.myTroops() or 0))
+			if interaction.canDonateTroops and troops > 0 then
+				self.deps.net.Intent:FireServer({ type = "donate_troops", target = info.ownerSmallID, amount = troops })
 				self:close()
 			end
 		elseif info.canAttack then

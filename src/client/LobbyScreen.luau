@@ -12,6 +12,7 @@ local MapCatalog = require(Shared:WaitForChild("Data"):WaitForChild("MapCatalog"
 local Format = require(Shared:WaitForChild("Format"))
 local Icons = require(script.Parent.Icons)
 local Style = require(script.Parent.Style)
+local Lang = require(script.Parent.Lang)
 
 local C, F = Style.color, Style.font
 
@@ -30,7 +31,7 @@ local UNITS = {
 	{ unit = "Hydrogen Bomb", icon = "hydrogenBomb" },
 	{ unit = "MIRV", icon = "mirv" },
 }
-local NOT_PORTED = { Factory = true }
+local NOT_PORTED: { [string]: boolean } = {} -- units shown as "(soon)"
 
 local thumbCache = {}
 local function thumbImage(entry)
@@ -84,10 +85,77 @@ function LobbyScreen.new(gui: ScreenGui, net)
 	local title = Style.text(modal, "Title", "Game Settings", 22, F.bold)
 	title.Position = UDim2.fromOffset(20, 14)
 	title.ZIndex = 82
+	self.title = title
 	local sub = Style.text(modal, "Host", "", 14, F.medium, C.gray400)
 	sub.Position = UDim2.fromOffset(20, 42)
 	sub.ZIndex = 82
 	self.hostLabel = sub
+
+	-- Matchmaking actions, top right: public lobbies offer a private match and
+	-- joining one by code; private matches show their code and invite friends.
+	local actions = Style.frame(modal, "Actions")
+	actions.AnchorPoint = Vector2.new(1, 0)
+	actions.Position = UDim2.new(1, -16, 0, 14)
+	actions.Size = UDim2.fromOffset(0, 32)
+	actions.AutomaticSize = Enum.AutomaticSize.X
+	actions.ZIndex = 82
+	local al = Style.row(actions, 8)
+	al.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	local function actionButton(name: string, text: string, order: number, onClick)
+		local b = Style.button(actions, name, text, 14, F.semibold)
+		b.AutomaticSize = Enum.AutomaticSize.X
+		b.Size = UDim2.fromOffset(0, 32)
+		b.BackgroundColor3 = C.gray700
+		b.BackgroundTransparency = 0
+		b.LayoutOrder = order
+		b.ZIndex = 83
+		Style.corner(b, 8)
+		Style.padding(b, 12, 0)
+		b.Activated:Connect(onClick)
+		return b
+	end
+	local codeBox = Instance.new("TextBox")
+	codeBox.Name = "CodeBox"
+	codeBox.PlaceholderText = "Code"
+	codeBox.Text = ""
+	codeBox.ClearTextOnFocus = false
+	codeBox.FontFace = F.semibold
+	codeBox.TextSize = 14
+	codeBox.TextColor3 = Color3.new(1, 1, 1)
+	codeBox.BackgroundColor3 = C.gray800
+	codeBox.Size = UDim2.fromOffset(90, 32)
+	codeBox.LayoutOrder = 1
+	codeBox.ZIndex = 83
+	codeBox.Parent = actions
+	Style.corner(codeBox, 8)
+	self.codeBox = codeBox
+	self.joinButton = actionButton("Join", "Join", 2, function()
+		local code = string.upper((string.gsub(codeBox.Text, "%s", "")))
+		if #code > 0 then
+			net.Intent:FireServer({ type = "join_code", code = code })
+			self.notice = "Joining…"
+			self:_refresh()
+		end
+	end)
+	self.privateButton = actionButton("Private", "Create private match", 3, function()
+		net.Intent:FireServer({ type = "create_private" })
+		self.notice = "Creating your private match…"
+		self:_refresh()
+	end)
+	self.shopButton = actionButton("Shop", "Shop", 5, function()
+		require(script.Parent.ShopScreen).open(gui, net)
+	end)
+	self.inviteButton = actionButton("Invite", "Invite friends", 4, function()
+		pcall(function()
+			game:GetService("SocialService"):PromptGameInvite(Players.LocalPlayer)
+		end)
+	end)
+	net.Event.OnClientEvent:Connect(function(evt)
+		if evt.type == "JoinCodeFailed" then
+			self.notice = "No private match with that code."
+			self:_refresh()
+		end
+	end)
 
 	local scroll = Instance.new("ScrollingFrame")
 	scroll.Name = "Content"
@@ -124,6 +192,17 @@ function LobbyScreen.new(gui: ScreenGui, net)
 		end
 	end)
 	self.startButton = start
+
+	-- Credits footer (AGPL section 7(b): the copyright notice stays visible).
+	local GameInfo = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("GameInfo"))
+	local credits = Style.text(shade, "Credits", `{GameInfo.COPYRIGHT} · {GameInfo.LICENSE} · Source: {GameInfo.SOURCE_URL}`, 11, F.medium, C.gray400)
+	credits.AnchorPoint = Vector2.new(0.5, 1)
+	credits.Position = UDim2.new(0.5, 0, 1, -4)
+	credits.ZIndex = 82
+	credits.TextWrapped = true
+	credits.AutomaticSize = Enum.AutomaticSize.Y
+	credits.Size = UDim2.new(1, -20, 0, 0)
+	credits.TextXAlignment = Enum.TextXAlignment.Center
 
 	self:_build()
 	net.Lobby.OnClientEvent:Connect(function(st)
@@ -165,6 +244,21 @@ function LobbyScreen:_section(title: string, order: number): Frame
 	h.ZIndex = 83
 	return sec
 end
+
+-- Game modes: FFA, a fixed team count, team size, or humans vs nations.
+local MODES = {
+	{ label = "Free for all", value = "ffa" },
+	{ label = "2 teams", value = 2 },
+	{ label = "3 teams", value = 3 },
+	{ label = "4 teams", value = 4 },
+	{ label = "5 teams", value = 5 },
+	{ label = "6 teams", value = 6 },
+	{ label = "7 teams", value = 7 },
+	{ label = "Duos", value = "Duos" },
+	{ label = "Trios", value = "Trios" },
+	{ label = "Quads", value = "Quads" },
+	{ label = "Humans vs Nations", value = "Humans Vs Nations" },
+}
 
 local function chip(parent: Instance, text: string, order: number, onClick: () -> ())
 	local b = Style.button(parent, text, text, 14, F.semibold)
@@ -245,8 +339,19 @@ function LobbyScreen:_build()
 		controls.maps[entry.id] = stroke
 	end
 
+	-- Game mode (upstream GameMode + team count).
+	local modeSec = self:_section("Mode", 2)
+	local mrow = wrapRow(modeSec, "Row", 1)
+	controls.mode = {}
+	for i, m in MODES do
+		local _, stroke = chip(mrow, m.label, i, function()
+			self:_set("mode", m.value)
+		end)
+		controls.mode[tostring(m.value)] = stroke
+	end
+
 	-- Difficulty.
-	local diff = self:_section("Difficulty", 2)
+	local diff = self:_section("Difficulty", 3)
 	local drow = wrapRow(diff, "Row", 1)
 	controls.difficulty = {}
 	for i, d in DIFFICULTIES do
@@ -259,66 +364,18 @@ function LobbyScreen:_build()
 	note.LayoutOrder = 2
 	note.ZIndex = 83
 
-	-- Bots slider.
-	local bots = self:_section("Bots", 3)
-	local brow = Style.frame(bots, "Row", nil)
-	brow.LayoutOrder = 1
-	brow.Size = UDim2.new(1, 0, 0, 30)
-	local bl = Style.text(brow, "Value", "250", 15, F.bold)
-	bl.AnchorPoint = Vector2.new(0, 0.5)
-	bl.Position = UDim2.fromScale(0, 0.5)
-	bl.ZIndex = 83
-	controls.botsLabel = bl
-	local track = Style.frame(brow, "Track", C.gray700, 1)
-	track.AnchorPoint = Vector2.new(0, 0.5)
-	track.Position = UDim2.new(0, 60, 0.5, 0)
-	track.Size = UDim2.new(1, -70, 0, 6)
-	track.Active = true
-	track.ZIndex = 83
-	Style.corner(track, 3)
-	local fill = Style.frame(track, "Fill", C.aquarius, 1)
-	fill.ZIndex = 84
-	Style.corner(fill, 3)
-	local knob = Style.frame(track, "Knob", C.aquarius, 1)
-	knob.AnchorPoint = Vector2.new(0.5, 0.5)
-	knob.Size = UDim2.fromOffset(16, 16)
-	knob.ZIndex = 85
-	Style.corner(knob, 8)
-	controls.botsFill, controls.botsKnob = fill, knob
-	local dragging = false
-	local UIS = game:GetService("UserInputService")
-	local function setFromX(x)
-		local rel = math.clamp((x - track.AbsolutePosition.X) / math.max(1, track.AbsoluteSize.X), 0, 1)
-		local v = math.floor(rel * 400 / 10 + 0.5) * 10
-		self.pendingBots = v
-		self:_paintBots(v)
-	end
-	track.InputBegan:Connect(function(input)
-		if self:isHost() and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
-			dragging = true
-			setFromX(input.Position.X)
-		end
-	end)
-	UIS.InputChanged:Connect(function(input)
-		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-			setFromX(input.Position.X)
-		end
-	end)
-	UIS.InputEnded:Connect(function(input)
-		if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
-			dragging = false
-			if self.pendingBots then
-				self:_set("bots", self.pendingBots)
-			end
-		end
-	end)
+	-- Bots and nations sliders (0..400, like upstream; 0 = disabled).
+	controls.sliders = {}
+	self.pending = {}
+	self:_slider("bots", self:_section("Bots", 4), 10)
+	self:_slider("nations", self:_section("Nations", 5), 1)
 
 	-- Options.
-	local opts = self:_section("Options", 4)
+	local opts = self:_section("Options", 6)
 	local orow = wrapRow(opts, "Row", 1)
 	controls.toggles = {}
 	for i, spec in {
-		{ key = "nations", label = "Nations (coming soon)", locked = true },
+		{ key = "randomSpawn", label = "Random spawn" },
 		{ key = "instantBuild", label = "Instant build" },
 		{ key = "infiniteGold", label = "Infinite gold" },
 		{ key = "infiniteTroops", label = "Infinite troops" },
@@ -331,7 +388,7 @@ function LobbyScreen:_build()
 		controls.toggles[spec.key] = { button = b, stroke = stroke, locked = spec.locked }
 	end
 
-	local gold = self:_section("Starting gold", 5)
+	local gold = self:_section("Starting gold", 7)
 	local grow = wrapRow(gold, "Row", 1)
 	controls.startingGold = {}
 	for i, v in STARTING_GOLD do
@@ -341,7 +398,7 @@ function LobbyScreen:_build()
 		controls.startingGold[v] = stroke
 	end
 
-	local mult = self:_section("Gold multiplier", 6)
+	local mult = self:_section("Gold multiplier", 8)
 	local mrow = wrapRow(mult, "Row", 1)
 	controls.goldMultiplier = {}
 	for i, v in GOLD_MULTIPLIER do
@@ -352,7 +409,7 @@ function LobbyScreen:_build()
 	end
 
 	-- Units.
-	local units = self:_section("Enabled units", 7)
+	local units = self:_section("Enabled units", 9)
 	local urow = wrapRow(units, "Row", 1)
 	controls.units = {}
 	for i, def in UNITS do
@@ -385,7 +442,7 @@ function LobbyScreen:_build()
 	end
 
 	-- Players.
-	local ps = self:_section("Players", 8)
+	local ps = self:_section("Players", 10)
 	local plist = Style.text(ps, "List", "", 14, F.medium, C.gray300)
 	plist.LayoutOrder = 1
 	plist.ZIndex = 83
@@ -396,11 +453,68 @@ function LobbyScreen:_build()
 	controls.players = plist
 end
 
-function LobbyScreen:_paintBots(v: number)
-	local c = self.controls
-	c.botsLabel.Text = tostring(v)
-	c.botsFill.Size = UDim2.fromScale(v / 400, 1)
-	c.botsKnob.Position = UDim2.fromScale(v / 400, 0.5)
+local SLIDER_MAX = 400
+
+-- A 0..SLIDER_MAX slider row for setting `key`, snapped to `step`.
+function LobbyScreen:_slider(key: string, section: Frame, step: number)
+	local row = Style.frame(section, "Row", nil)
+	row.LayoutOrder = 1
+	row.Size = UDim2.new(1, 0, 0, 30)
+	local label = Style.text(row, "Value", "0", 15, F.bold)
+	label.AnchorPoint = Vector2.new(0, 0.5)
+	label.Position = UDim2.fromScale(0, 0.5)
+	label.ZIndex = 83
+	local track = Style.frame(row, "Track", C.gray700, 1)
+	track.AnchorPoint = Vector2.new(0, 0.5)
+	track.Position = UDim2.new(0, 80, 0.5, 0)
+	track.Size = UDim2.new(1, -90, 0, 6)
+	track.Active = true
+	track.ZIndex = 83
+	Style.corner(track, 3)
+	local fill = Style.frame(track, "Fill", C.aquarius, 1)
+	fill.ZIndex = 84
+	Style.corner(fill, 3)
+	local knob = Style.frame(track, "Knob", C.aquarius, 1)
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.Size = UDim2.fromOffset(16, 16)
+	knob.ZIndex = 85
+	Style.corner(knob, 8)
+	self.controls.sliders[key] = { label = label, fill = fill, knob = knob }
+
+	local dragging = false
+	local UIS = game:GetService("UserInputService")
+	local function setFromX(x)
+		local rel = math.clamp((x - track.AbsolutePosition.X) / math.max(1, track.AbsoluteSize.X), 0, 1)
+		local v = math.floor(rel * SLIDER_MAX / step + 0.5) * step
+		self.pending[key] = v
+		self:_paintSlider(key, v)
+	end
+	track.InputBegan:Connect(function(input)
+		if self:isHost() and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+			dragging = true
+			setFromX(input.Position.X)
+		end
+	end)
+	UIS.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			setFromX(input.Position.X)
+		end
+	end)
+	UIS.InputEnded:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+			dragging = false
+			if self.pending[key] then
+				self:_set(key, self.pending[key])
+			end
+		end
+	end)
+end
+
+function LobbyScreen:_paintSlider(key: string, v: number)
+	local c = self.controls.sliders[key]
+	c.label.Text = if v == 0 then "Disabled" else tostring(v)
+	c.fill.Size = UDim2.fromScale(v / SLIDER_MAX, 1)
+	c.knob.Position = UDim2.fromScale(v / SLIDER_MAX, 0.5)
 end
 
 local function mark(stroke: UIStroke, on: boolean)
@@ -418,11 +532,16 @@ function LobbyScreen:_refresh()
 	for id, stroke in c.maps do
 		mark(stroke, id == s.map)
 	end
+	for v, stroke in c.mode do
+		mark(stroke, v == tostring(s.mode or "ffa"))
+	end
 	for d, stroke in c.difficulty do
 		mark(stroke, d == s.difficulty)
 	end
-	self.pendingBots = nil
-	self:_paintBots(s.bots)
+	for key in c.sliders do
+		self.pending[key] = nil
+		self:_paintSlider(key, s[key])
+	end
 	for key, t in c.toggles do
 		mark(t.stroke, s[key] == true)
 		t.button.TextTransparency = if t.locked then 0.5 else 0
@@ -438,7 +557,7 @@ function LobbyScreen:_refresh()
 		mark(u.stroke, enabled)
 		u.icon.ImageTransparency = if enabled then 0 else 0.6
 		u.label.TextTransparency = if enabled then 0 else 0.5
-		u.label.Text = if NOT_PORTED[unit] then `{unit} (soon)` else unit
+		u.label.Text = if NOT_PORTED[unit] then Lang.t("{unit} (soon)", { unit = Lang.t(unit) }) else unit
 	end
 	c.players.Text = table.concat(st.players or {}, ", ")
 	local hostName = "?"
@@ -446,9 +565,23 @@ function LobbyScreen:_refresh()
 	if hp then
 		hostName = hp.DisplayName
 	end
-	self.hostLabel.Text = if host then "You are the host — choose the settings and start the game." else `Host: {hostName} — waiting for the host to start.`
+	local public = st.mode == "public"
+	self.title.Text = if public then "Next match" else "Game Settings"
+	if public then
+		self.hostLabel.Text = Lang.t("Public match on {map} — join with friends, the map rotates every match.", { map = s.map })
+	elseif st.joinCode then
+		self.hostLabel.Text = (if host then Lang.t("You are the host. ") else Lang.t("Host: {hostName}. ", { hostName = hostName })) .. Lang.t("Friends join with code {code}.", { code = st.joinCode })
+	else
+		self.hostLabel.Text = if host then "You are the host — choose the settings and start the game." else Lang.t("Host: {hostName} — waiting for the host to start.", { hostName = hostName })
+	end
 	self.startButton.Visible = host
-	self.status.Text = if st.secondsLeft then `Starting in {st.secondsLeft} s` else (if host then "" else "Waiting for the host…")
+	local status = if st.secondsLeft then Lang.t("Starting in {seconds} s", { seconds = st.secondsLeft }) else (if host then "" else "Waiting for the host…")
+	self.status.Text = if self.notice then self.notice .. "   " .. status else status
+	local mm = st.canMatchmake == true
+	self.codeBox.Visible = mm and public
+	self.joinButton.Visible = mm and public
+	self.privateButton.Visible = mm and public
+	self.inviteButton.Visible = not public
 end
 
 return LobbyScreen

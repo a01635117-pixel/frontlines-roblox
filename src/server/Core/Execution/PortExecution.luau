@@ -35,7 +35,8 @@ function PortExecution:tick()
 	if not port:hasTrainStation() then
 		local nearbyFactory = mg:hasUnitNearby(port:tile(), mg:config():trainStationMaxRange(), UnitType.Factory)
 		if nearbyFactory then
-			warn("TODO(port): TrainStationExecution")
+			local TrainStationExecution = require(script.Parent.TrainExecutions).TrainStationExecution
+			mg:addExecution(TrainStationExecution.new(port))
 		end
 	end
 	if (mg:ticks() + self.checkOffset) % 10 ~= 0 then

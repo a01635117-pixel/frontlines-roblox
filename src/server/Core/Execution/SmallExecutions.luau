@@ -191,6 +191,23 @@ function WinCheck:_hasWonRoblox(leader): boolean
 	return true
 end
 
+-- Team version of the Roblox rule: the team holds 95 % of the land and no
+-- living player outside it can afford a MIRV.
+function WinCheck:_hasWonRobloxTeam(team: string, tilesOwned: number): boolean
+	local mg = self.mg
+	local numTilesWithoutFallout = mg:numLandTiles() - mg:numTilesWithFallout()
+	if tilesOwned * 100 < numTilesWithoutFallout * ROBLOX_WIN_PERCENT then
+		return false
+	end
+	local mirv = mg:config():unitInfo(GameTypes.UnitType.MIRV)
+	for _, p in mg:players() do
+		if p:team() ~= team and p:isAlive() and p:gold() >= mirv.cost(mg, p) then
+			return false
+		end
+	end
+	return true
+end
+
 function WinCheck:checkWinnerTeam()
 	local teamToTiles = {}
 	local order = {}
@@ -212,7 +229,8 @@ function WinCheck:checkWinnerTeam()
 		return
 	end
 	local team = order[1]
-	if self:_hasWon(teamToTiles[team]) then
+	local won = if self.mg:config():gameConfig().robloxWinRule then self:_hasWonRobloxTeam(team, teamToTiles[team]) else self:_hasWon(teamToTiles[team])
+	if won then
 		if team == ColoredTeams.Bot then
 			return
 		end

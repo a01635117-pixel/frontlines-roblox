@@ -51,6 +51,30 @@ function deltaMatrix(hexes) {
   return `{ ${rows.flat().map((v) => (Number.isInteger(v) ? String(v) : v.toPrecision(17))).join(", ")} }`;
 }
 
+// ThemeProvider generateTeamColors: 64 LCH variations per team (Bot: 1).
+function generateTeamColors(base) {
+  const lch = base.toLch();
+  const goldenAngle = 137.508;
+  return Array.from({ length: 64 }, (_, index) => {
+    if (index === 0) return base;
+    const hueShift = ((index * goldenAngle) % 12) - 6;
+    const h = (lch.h + hueShift + 360) % 360;
+    const chromaFactor = 1.0 + 0.1 * Math.sin(index * 0.7);
+    const c = Math.max(10, Math.min(130, lch.c * chromaFactor));
+    const lightOffset = 18 * Math.sin(index * goldenAngle * (Math.PI / 180));
+    const l = Math.max(25, Math.min(80, lch.l + lightOffset));
+    return colord({ l, c, h });
+  });
+}
+const teamPalettes = Object.entries(theme.teamColors)
+  .map(([name, hex]) => {
+    const base = colord(hex);
+    const colors = name === "Bot" ? [base] : generateTeamColors(base);
+    const rows = colors.map((c) => `\t\t\t{ rgb = ${rgb(c)}, border = ${rgb(borderColor(c))} },`).join("\n");
+    return `\t\t[${JSON.stringify(name)}] = {\n${rows}\n\t\t},`;
+  })
+  .join("\n");
+
 const teams = Object.entries(theme.teamColors)
   .map(([name, hex]) => `\t\t[${JSON.stringify(name)}] = ${entry(hex)},`)
   .join("\n");
@@ -65,6 +89,10 @@ return {
 \tfallback = ${list(theme.fallbackColors)},
 \tteam = {
 ${teams}
+\t},
+\t-- Per-team player variations (teamColorForPlayer: simpleHash(id) % n).
+\tteamPalettes = {
+${teamPalettes}
 \t},
 \t-- CIEDE2000 (colord .delta) between pool colours, row-major.
 \thumanDelta = ${deltaMatrix(theme.humanColors)},

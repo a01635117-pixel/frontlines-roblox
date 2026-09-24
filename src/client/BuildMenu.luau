@@ -17,6 +17,7 @@ local UserInputService = game:GetService("UserInputService")
 local Format = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Format"))
 local Icons = require(script.Parent.Icons)
 local Style = require(script.Parent.Style)
+local Lang = require(script.Parent.Lang)
 
 local C, F = Style.color, Style.font
 
@@ -212,7 +213,7 @@ function BuildMenu:_refreshTip()
 	if not item then
 		return
 	end
-	self.tipTitle.Text = `{item.unit} [{item.hotkey}]`
+	self.tipTitle.Text = Lang.t("{unit} [{key}]", { unit = Lang.t(item.unit), key = item.hotkey })
 	self.tipDesc.Text = item.desc
 	self.tipHint.Visible = item.hint ~= nil
 	self.tipHint.Text = item.hint or ""
@@ -360,6 +361,9 @@ function BuildMenu:select(unit: string?)
 	self.selected = unit
 	self.ghostTile, self.ghostInfo = nil, nil
 	self.ghost.Visible = false
+	if self.deps.renderer then
+		self.deps.renderer:setGhostRails(nil, nil)
+	end
 	self.ghostRange.Visible = false
 	if unit then
 		local item = ITEM_BY_UNIT[unit]
@@ -380,10 +384,10 @@ function BuildMenu:query(tile: number, cb)
 	self:_query(tile, cb)
 end
 
-function BuildMenu:_query(tile: number, cb)
+function BuildMenu:_query(tile: number, cb, ghost: string?)
 	task.spawn(function()
 		local ok, result = pcall(function()
-			return self.deps.net.Query:InvokeServer({ tile = tile })
+			return self.deps.net.Query:InvokeServer({ tile = tile, ghost = ghost })
 		end)
 		cb(if ok then result else nil)
 	end)
@@ -418,6 +422,10 @@ function BuildMenu:_updateGhost()
 		color = OK_COLOR
 	end
 	self.ghostStroke.Color = color
+	if self.deps.renderer then
+		-- Rail preview (GhostPreviewData.ghostRailPaths / overlappingRailroads).
+		self.deps.renderer:setGhostRails(info and info.ghostRailPaths, info and info.overlappingRailroads)
+	end
 	self.ghost.BackgroundColor3 = self.deps.myColor() or C.gray800
 	if info then
 		local mult = if info.canUpgrade or self.selected == "Atom Bomb" then self.multiplier else 1
@@ -493,7 +501,7 @@ function BuildMenu:_scheduleQuery()
 				self.queryDirty = false
 				self:_scheduleQuery()
 			end
-		end)
+		end, unit)
 	end)
 end
 
@@ -507,17 +515,17 @@ function BuildMenu:click(tile: number): boolean
 	local info = self.ghostInfo
 	if info == nil or self.ghostTile ~= tile then
 		-- Not resolved for this tile yet: let the server decide.
-		self.deps.net.Intent:FireServer({ type = "place", unit = unit, tile = tile, amount = self.multiplier })
+		self.deps.net.Intent:FireServer({ type = "place", unit = unit, tile = tile, amount = self.multiplier, rocketDirectionUp = self.deps.rocketUp == nil or self.deps.rocketUp() })
 		self:select(nil)
 		return true
 	end
 	if info.canUpgrade then
-		self.deps.net.Intent:FireServer({ type = "place", unit = unit, tile = tile, amount = self.multiplier })
+		self.deps.net.Intent:FireServer({ type = "place", unit = unit, tile = tile, amount = self.multiplier, rocketDirectionUp = self.deps.rocketUp == nil or self.deps.rocketUp() })
 		self:select(nil)
 	elseif info.canBuild then
 		-- Atom bombs honour the x5 multiplier (bulk launch), like upstream.
 		local amount = if unit == "Atom Bomb" then self.multiplier else nil
-		self.deps.net.Intent:FireServer({ type = "place", unit = unit, tile = tile, amount = amount })
+		self.deps.net.Intent:FireServer({ type = "place", unit = unit, tile = tile, amount = amount, rocketDirectionUp = self.deps.rocketUp == nil or self.deps.rocketUp() })
 		if unit ~= "Atom Bomb" and unit ~= "Hydrogen Bomb" then -- shouldPreserveGhostAfterBuild
 			self:select(nil)
 		end

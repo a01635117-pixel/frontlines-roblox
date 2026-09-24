@@ -26,6 +26,29 @@ local ANGRY = Color3.new(0.784, 0, 0) -- render-settings unit.angry
 local UNTARGETABLE_ALPHA = 0.6
 -- Config.nukeMagnitudes outer radius, in tiles.
 local BLAST_RADIUS = { ["Atom Bomb"] = 30, ["Hydrogen Bomb"] = 100, ["MIRV Warhead"] = 18 }
+-- NukeTelegraphPass: NUKE_MAGNITUDES circles at the target of a nuke in
+-- flight, coloured by launcher (render-settings nukeTelegraph: self green,
+-- ally yellow, enemy red; alpha 0.85 pulsing +-0.1, inner fill 0.6 fainter).
+local NUKE_MAG = { ["Atom Bomb"] = { 12, 30 }, ["Hydrogen Bomb"] = { 80, 100 }, ["MIRV Warhead"] = { 12, 18 } }
+local TELEGRAPH_COLORS = { [0] = Color3.new(0, 1, 0), Color3.new(1, 1, 0), Color3.new(1, 0, 0) }
+local function circle(parent: Instance, name: string, color: Color3, filled: boolean)
+	local f = Instance.new("Frame")
+	f.Name = name
+	f.AnchorPoint = Vector2.new(0.5, 0.5)
+	f.BorderSizePixel = 0
+	f.BackgroundColor3 = color
+	f.BackgroundTransparency = if filled then 0.75 else 1
+	f.ZIndex = 4
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0.5, 0)
+	c.Parent = f
+	local s = Instance.new("UIStroke")
+	s.Color = color
+	s.Thickness = 1.5
+	s.Parent = f
+	f.Parent = parent
+	return f, s
+end
 local SHOCKWAVE_SECONDS = 1.5 -- nukeShockwaveDurationMs
 local SHOCKWAVE_FACTOR = 1.5 -- nukeShockwaveRadiusFactor
 
@@ -144,8 +167,26 @@ local function makeStructure(parent: Instance, id: number, icon: string)
 	level.AutomaticSize = Enum.AutomaticSize.XY
 	level.TextColor3 = Color3.fromRGB(255, 214, 90)
 	level.ZIndex = 7
+	-- Reload bar under the icon (SAM / silo missiles reloading).
+	local reload = Instance.new("Frame")
+	reload.Name = "Reload"
+	reload.AnchorPoint = Vector2.new(0.5, 0)
+	reload.Position = UDim2.new(0.5, 0, 1, 2)
+	reload.Size = UDim2.new(1, 0, 0, 3)
+	reload.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	reload.BorderSizePixel = 0
+	reload.Visible = false
+	reload.ZIndex = 7
+	local rfill = Instance.new("Frame")
+	rfill.Name = "Fill"
+	rfill.BorderSizePixel = 0
+	rfill.BackgroundColor3 = Color3.fromRGB(255, 196, 60)
+	rfill.Size = UDim2.fromScale(0, 1)
+	rfill.ZIndex = 8
+	rfill.Parent = reload
+	reload.Parent = frame
 	frame.Parent = parent
-	return frame, g, level, stroke
+	return frame, g, level, stroke, reload, rfill
 end
 
 -- Apply one unit update { id, unitType, ownerID, pos, troops, isActive,
@@ -158,6 +199,10 @@ function UnitLayer:apply(u)
 		end
 		if e then
 			e.frame:Destroy()
+			if e.telegraph then
+				e.telegraph.inner:Destroy()
+				e.telegraph.outer:Destroy()
+			end
 			self.units[u.id] = nil
 			if e.isStructure and self.onChanged then
 				self.onChanged()
@@ -170,13 +215,27 @@ function UnitLayer:apply(u)
 		self:_applyStructure(e, u, icon)
 		return
 	end
-	if not Sprites.has(u.unitType) then
-		return -- TODO(port): trains
+	local spriteKey = u.unitType
+	if u.unitType == "Train" then
+		spriteKey = if u.trainType == "Engine" or u.trainType == "TailEngine"
+			then "TrainEngine"
+			elseif u.loaded then "TrainCarriageLoaded"
+			else "TrainCarriage"
+		if e and e.spriteKey ~= spriteKey then
+			-- Loaded state changed: swap the sprite.
+			e.frame:Destroy()
+			self.units[u.id] = nil
+			e = nil
+		end
+	end
+	if not Sprites.has(spriteKey) then
+		return
 	end
 	local now = os.clock()
 	if e == nil then
-		local frame, bands = Sprites.make(self.container, u.unitType, `Unit{u.id}`)
+		local frame, bands = Sprites.make(self.container, spriteKey, `Unit{u.id}`)
 		e = {
+			spriteKey = spriteKey,
 			frame = frame,
 			bands = bands,
 			sprite = true,
@@ -190,6 +249,13 @@ function UnitLayer:apply(u)
 		}
 		if e.warship then
 			e.hbar, e.hfill, e.ring = addWarshipExtras(frame)
+		end
+		local mag = NUKE_MAG[u.unitType]
+		if mag and u.targetTile then
+			local color = TELEGRAPH_COLORS[if self.relationOf then self.relationOf(u.ownerID) else 2]
+			local inner, innerStroke = circle(self.container, "TelegraphInner", color, true)
+			local outer, outerStroke = circle(self.container, "TelegraphOuter", color, false)
+			e.telegraph = { inner = inner, outer = outer, innerStroke = innerStroke, outerStroke = outerStroke, tile = u.targetTile, mag = mag }
 		end
 		if u.plan then
 			local p = u.plan
@@ -297,12 +363,15 @@ end
 
 function UnitLayer:_applyStructure(e, u, icon: string)
 	if e == nil then
-		local frame, g, level, stroke = makeStructure(self.container, u.id, icon)
-		e = { frame = frame, glyph = g, levelLabel = level, stroke = stroke, isStructure = true, pos = u.pos }
+		local frame, g, level, stroke, reload, rfill = makeStructure(self.container, u.id, icon)
+		e = { frame = frame, glyph = g, levelLabel = level, stroke = stroke, reload = reload, reloadFill = rfill, isStructure = true, pos = u.pos }
 		self.units[u.id] = e
 	end
 	e.unitType, e.ownerID, e.pos = u.unitType, u.ownerID, u.pos
 	e.level = u.level or 1
+	e.missileTimers = u.missileTimers
+	e.reloadTicks = u.reloadTicks
+	e.underConstruction = u.underConstruction == true
 	local color = self.colors[u.ownerID] or Color3.new(1, 1, 1)
 	e.frame.BackgroundColor3 = color:Lerp(Color3.new(0, 0, 0), 0.25)
 	-- Structures being built are drawn faded until they finish.
@@ -313,6 +382,7 @@ function UnitLayer:_applyStructure(e, u, icon: string)
 	e.stroke.Color = if u.markedForDeletion then Color3.fromRGB(230, 70, 70) else Color3.new(1, 1, 1)
 	e.stroke.Thickness = if u.markedForDeletion then 2.5 else 1.5
 	e.glyph.ImageTransparency = if building then 0.4 else 0
+	self:_paintReload(e)
 	e.levelLabel.Text = if e.level > 1 then tostring(e.level) else ""
 	self:_place(e)
 	if self.onChanged then
@@ -397,6 +467,32 @@ function UnitLayer:totalLevels(ownerID: number, unitType: string): number
 	return n
 end
 
+-- Oldest reloading missile's progress; icon dimmed while every missile reloads.
+function UnitLayer:_paintReload(e)
+	local timers = e.missileTimers
+	if timers == nil or e.reloadTicks == nil or e.underConstruction then
+		e.reload.Visible = false
+		return
+	end
+	local tick = if self.tickNow then self.tickNow() else 0
+	local frac = math.clamp((tick - timers[1]) / e.reloadTicks, 0, 1)
+	e.reload.Visible = true
+	e.reloadFill.Size = UDim2.fromScale(frac, 1)
+	e.glyph.ImageTransparency = if #timers >= e.level then 0.5 else 0
+end
+
+-- Whether the player owns a finished silo with a missile ready.
+function UnitLayer:siloReady(ownerID: number): boolean
+	for _, e in self.units do
+		if e.ownerID == ownerID and e.unitType == "Missile Silo" and not e.underConstruction then
+			if e.missileTimers == nil or #e.missileTimers < e.level then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 function UnitLayer:_place(e)
 	local camera, map = self.camera, self.map
 	local size = math.clamp(camera.zoom * 3, MIN_STRUCT, MAX_STRUCT)
@@ -416,6 +512,9 @@ function UnitLayer:render()
 	for _, e in self.units do
 		if e.isStructure then
 			self:_place(e)
+			if e.missileTimers then
+				self:_paintReload(e)
+			end
 			continue
 		end
 		local x, y
@@ -439,6 +538,23 @@ function UnitLayer:render()
 		if e.flicker or e.retreating then
 			self:_paintSprite(e, tick)
 		end
+		local tg = e.telegraph
+		if tg then
+			-- Hidden until the plan starts (NukeTelegraphs skips future launches).
+			local live = not e.planned or tick >= e.startTick
+			tg.inner.Visible, tg.outer.Visible = live, live
+			if live then
+				local c = camera:screenPos(map:x(tg.tile) + 0.5, map:y(tg.tile) + 0.5)
+				local a = 0.85 + 0.1 * math.sin(now * 3)
+				tg.inner.Position = UDim2.fromOffset(c.X, c.Y)
+				tg.outer.Position = tg.inner.Position
+				tg.inner.Size = UDim2.fromOffset(tg.mag[1] * 2 * camera.zoom, tg.mag[1] * 2 * camera.zoom)
+				tg.outer.Size = UDim2.fromOffset(tg.mag[2] * 2 * camera.zoom, tg.mag[2] * 2 * camera.zoom)
+				tg.inner.BackgroundTransparency = 1 - math.max(0, a - 0.6)
+				tg.innerStroke.Transparency = 1 - a
+				tg.outerStroke.Transparency = 1 - a
+			end
+		end
 	end
 	if self.explosions then
 		local keep = {}
@@ -451,4 +567,22 @@ function UnitLayer:render()
 	end
 end
 
+
+-- Owners of nukes in flight (PlayerIcons nuke icon): smallID -> "me" when a
+-- bomb lands on our territory (renderer:ownerAt), else true.
+local NUKES = { ["Atom Bomb"] = true, ["Hydrogen Bomb"] = true, ["MIRV"] = true, ["MIRV Warhead"] = true }
+function UnitLayer:nukeOwners(renderer, mySmallID: number?)
+	local out = {}
+	for _, e in self.units do
+		if NUKES[e.unitType] and e.ownerID then
+			local hitsMe = mySmallID ~= nil and e.targetTile ~= nil and renderer:ownerAt(e.targetTile) == mySmallID
+			if hitsMe then
+				out[e.ownerID] = "me"
+			elseif out[e.ownerID] == nil then
+				out[e.ownerID] = true
+			end
+		end
+	end
+	return out
+end
 return UnitLayer

@@ -6,6 +6,7 @@
 
 local Format = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Format"))
 local Style = require(script.Parent.Style)
+local Lang = require(script.Parent.Lang)
 
 local C, F = Style.color, Style.font
 
@@ -349,7 +350,7 @@ local TutorialPanel = {}
 TutorialPanel.__index = TutorialPanel
 
 local function interpolate(s: string, vars): string
-	return (string.gsub(s, "{(%w+)}", function(k)
+	return (string.gsub(Lang.t(s), "{(%w+)}", function(k)
 		local v = vars[k]
 		return if v ~= nil then tostring(v) else "{" .. k .. "}"
 	end))
@@ -763,7 +764,7 @@ function TutorialPanel:_stepText(step, done: boolean): string
 	end
 	local cost = if step.unit and ctx then ctx.costs[step.unit] else nil
 	if not done and cost ~= nil and ctx and ctx.gold < cost then
-		return interpolate(T.step.earn_gold, { unit = UNIT_NAMES[step.unit], cost = Format.renderNumber(cost) })
+		return interpolate(T.step.earn_gold, { unit = Lang.t(UNIT_NAMES[step.unit]), cost = Format.renderNumber(cost) })
 	end
 	if not done and step.id == "launch_atom" and ctx and ctx.siloReady == false then
 		return T.step.silo_loading

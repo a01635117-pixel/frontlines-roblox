@@ -5,7 +5,8 @@
 --   MiniMap( ShoreCoercing( Smoothing( ComponentCheck( HPA* ) ) ) )
 -- or, when the abstract graph is missing / tiny, MiniMap(ShoreCoercing(A*)).
 -- Air (SAM missiles) is here; Parabola (rockets) lives in Parabola.luau.
--- TODO(port): WaterPathMemo (trade ships), Rail / Station.
+-- Rail (railroads) and Stations (train routing) are at the end.
+-- TODO(port): WaterPathMemo (trade ships).
 
 local AStarWater = require(script.Parent.AStarWater)
 local Transformers = require(script.Parent.Transformers)
@@ -300,6 +301,187 @@ end
 
 function PathFinder.Air(game)
 	return Stepper.new(AirFinder.new(game))
+end
+
+
+-- Rail (AStar.Rail.ts) -----------------------------------------------------------------
+-- A* over the minimap: land freely, water only along shorelines, with water /
+-- shoreline and direction-change penalties.
+
+local AStar = require(script.Parent.AStar)
+
+local RailAdapter = {}
+RailAdapter.__index = RailAdapter
+local WATER_PENALTY = 5
+local HEURISTIC_WEIGHT = 2
+local DIRECTION_CHANGE_PENALTY = 3
+
+function RailAdapter.new(gameMap)
+	local w, h = gameMap:width(), gameMap:height()
+	return setmetatable({ map = gameMap, width = w, height = h, n = w * h }, RailAdapter)
+end
+function RailAdapter:numNodes(): number
+	return self.n
+end
+function RailAdapter:maxNeighbors(): number
+	return 4
+end
+function RailAdapter:maxPriority(): number
+	local maxCost = 1 + WATER_PENALTY + DIRECTION_CHANGE_PENALTY
+	return HEURISTIC_WEIGHT * (self.width + self.height) * maxCost
+end
+function RailAdapter:_traversable(to: number, fromShoreline: boolean, isImpassable: boolean): boolean
+	if isImpassable then
+		return false
+	end
+	if not self.map:isWater(to) then
+		return true
+	end
+	return fromShoreline or self.map:isShoreline(to)
+end
+function RailAdapter:neighbors(node: number, buf: { number }): number
+	local count = 0
+	local w = self.width
+	local x = node % w
+	local fromShoreline = self.map:isShoreline(node)
+	local isImpassable = self.map:isImpassable(node)
+	if node >= w then
+		local n = node - w
+		if self:_traversable(n, fromShoreline, isImpassable) then
+			count += 1
+			buf[count] = n
+		end
+	end
+	if node < self.n - w then
+		local n = node + w
+		if self:_traversable(n, fromShoreline, isImpassable) then
+			count += 1
+			buf[count] = n
+		end
+	end
+	if x ~= 0 then
+		local n = node - 1
+		if self:_traversable(n, fromShoreline, isImpassable) then
+			count += 1
+			buf[count] = n
+		end
+	end
+	if x ~= w - 1 then
+		local n = node + 1
+		if self:_traversable(n, fromShoreline, isImpassable) then
+			count += 1
+			buf[count] = n
+		end
+	end
+	return count
+end
+function RailAdapter:cost(from: number, to: number, prev: number?): number
+	local penalized = self.map:isWater(to) or self.map:isShoreline(to)
+	local c = if penalized then 1 + WATER_PENALTY else 1
+	if prev ~= nil and from - prev ~= to - from then
+		c += DIRECTION_CHANGE_PENALTY
+	end
+	return c
+end
+function RailAdapter:heuristic(node: number, goal: number): number
+	local w = self.width
+	local nx, ny = node % w, node // w
+	local gx, gy = goal % w, goal // w
+	return HEURISTIC_WEIGHT * (math.abs(nx - gx) + math.abs(ny - gy))
+end
+
+-- Upstream builds a new AStarRail per query; the stamped buffers make reusing
+-- one per minimap equivalent.
+local railAStarCache = setmetatable({}, { __mode = "k" })
+
+function PathFinder.Rail(game)
+	local miniMap = game:miniMap()
+	local astar = railAStarCache[miniMap]
+	if astar == nil then
+		astar = AStar.new(RailAdapter.new(miniMap))
+		railAStarCache[miniMap] = astar
+	end
+	return Stepper.new(Transformers.MiniMap.new(astar, game:map(), miniMap), tileStepperConfig(game))
+end
+
+-- Stations (PathFinder.Station.ts) ---------------------------------------------------------
+-- A* over the station graph (ids from the StationManager), unit costs and a
+-- Manhattan heuristic; only within the destination's cluster.
+
+local StationAdapter = {}
+StationAdapter.__index = StationAdapter
+function StationAdapter:numNodes(): number
+	return self.manager:count()
+end
+function StationAdapter:maxNeighbors(): number
+	return 32
+end
+function StationAdapter:maxPriority(): number
+	return self.game:map():width() + self.game:map():height()
+end
+function StationAdapter:neighbors(node: number, buf: { number }): number
+	local station = self.manager:getById(node)
+	if not station then
+		return 0
+	end
+	local count = 0
+	for _, n in station:neighbors() do
+		count += 1
+		buf[count] = n.id
+	end
+	return count
+end
+function StationAdapter:cost(): number
+	return 1
+end
+function StationAdapter:heuristic(node: number, goal: number): number
+	local a, b = self.manager:getById(node), self.manager:getById(goal)
+	if not a or not b then
+		return 0
+	end
+	local g = self.game
+	return math.abs(g:x(a:tile()) - g:x(b:tile())) + math.abs(g:y(a:tile()) - g:y(b:tile()))
+end
+
+local StationFinder = {}
+StationFinder.__index = StationFinder
+function StationFinder.new(game)
+	local manager = game:railNetwork():stationManager()
+	local adapter = setmetatable({ game = game, manager = manager }, StationAdapter)
+	return setmetatable({ manager = manager, aStar = AStar.new(adapter) }, StationFinder)
+end
+function StationFinder:findPath(from, to)
+	local toCluster = to:getCluster()
+	local fromArray = if type(from) == "table" and from.unit == nil then from else { from }
+	local fromIds = {}
+	for _, s in fromArray do
+		if s:getCluster() == toCluster then
+			table.insert(fromIds, s.id)
+		end
+	end
+	if #fromIds == 0 then
+		return nil
+	end
+	local path = self.aStar:findPath(fromIds, to.id)
+	if not path then
+		return nil
+	end
+	local out = table.create(#path)
+	for i, id in path do
+		out[i] = self.manager:getById(id)
+	end
+	return out
+end
+
+function PathFinder.Stations(game)
+	return Stepper.new(StationFinder.new(game), {
+		equals = function(a, b)
+			return a.id == b.id
+		end,
+		distance = function(a, b)
+			return game:manhattanDist(a:tile(), b:tile())
+		end,
+	})
 end
 
 return PathFinder

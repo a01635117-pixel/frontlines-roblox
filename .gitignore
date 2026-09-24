@@ -1,4 +1,5 @@
-node_modules/
-*.rbxl.lock
-*.rbxlx.lock
 build/
+tools/node_modules/
+*.lock
+*.rbxlx.lock
+.DS_Store

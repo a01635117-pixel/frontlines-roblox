@@ -17,6 +17,7 @@ local Util = require(Shared.Util)
 local Config = require(script.Parent.Config)
 local GameImpl = require(script.Parent.GameImpl)
 local GameTypes = require(script.Parent.GameTypes)
+local NationCreation = require(script.Parent.NationCreation)
 local Exec = script.Parent.Execution
 local AttackExecution = require(Exec.AttackExecution)
 local SmallExecutions = require(Exec.SmallExecutions)
@@ -141,12 +142,13 @@ function GameRunner.create(gameStart, mapModule: ModuleScript)
 		)
 	end
 
-	-- TODO(port): NationCreation.createNationsForGame + NationExecution.
-	-- With nations "disabled" upstream returns [] without touching `random`.
-	local nations = {}
-	if config:spawnNations() then
-		warn("TODO(port): nations are not ported yet; starting without nations")
-	end
+	local nations = NationCreation.createNationsForGame(
+		config:gameConfig(),
+		manifest.nations or {},
+		manifest.additionalNations or {},
+		#humans,
+		random
+	)
 
 	local game = GameImpl.new(humans, nations, gameMap, miniGameMap, config, manifest.teamGameSpawnAreas)
 	local purchased = {}
@@ -168,17 +170,37 @@ function GameRunner:init()
 	if config:gameConfig().gameType ~= GameType.Singleplayer then
 		game:addExecution(SmallExecutions.SpawnTimerExecution.new())
 	end
-	-- TODO(port): nation executions (config:spawnNations()).
+	if config:spawnNations() then
+		local NationExecution = require(Exec.NationExecution)
+		local execs = {}
+		for _, nation in game:nations() do
+			table.insert(execs, NationExecution.new(self.execManager.gameID, nation))
+		end
+		if #execs > 0 then
+			game:addExecution(table.unpack(execs))
+		end
+	end
 	if config:isRandomSpawn() then
-		-- TODO(port): PlayerSpawner (random spawn for humans).
-		warn("TODO(port): random spawn")
+		-- PlayerSpawner: a SpawnExecution without a tile per human.
+		local execs = {}
+		for _, player in game:allPlayers() do
+			if player:type() == PlayerType.Human then
+				table.insert(execs, SpawnExecution.new(self.execManager.gameID, player:info()))
+			end
+		end
+		if #execs > 0 then
+			game:addExecution(table.unpack(execs))
+		end
 	end
 	if config:bots() > 0 then
 		game:addExecution(table.unpack(self.execManager:spawnTribes(config:bots())))
 	end
 	game:addExecution(SmallExecutions.WinCheckExecution.new())
-	-- TODO(port): DoomsdayClockExecution; RecomputeRailClusterExecution
-	-- (factories). Neither affects territory until those systems exist.
+	if not config:isUnitDisabled(GameTypes.UnitType.Factory) then
+		local RecomputeRailClusterExecution = require(Exec.TrainExecutions).RecomputeRailClusterExecution
+		game:addExecution(RecomputeRailClusterExecution.new(game:railNetwork()))
+	end
+	-- TODO(port): DoomsdayClockExecution
 end
 
 -- Runs one tick with this turn's intents. Returns the tick's game updates.

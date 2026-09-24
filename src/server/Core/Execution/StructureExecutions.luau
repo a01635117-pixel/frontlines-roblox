@@ -30,8 +30,8 @@ function City:tick()
 	if not self._stationCreated then
 		local nearbyFactory = self.mg:hasUnitNearby(self.city:tile(), self.mg:config():trainStationMaxRange(), UnitType.Factory)
 		if nearbyFactory then
-			-- TODO(port): TrainStationExecution (rail network).
-			warn("TODO(port): TrainStationExecution")
+			local TrainStationExecution = require(script.Parent.TrainExecutions).TrainStationExecution
+			self.mg:addExecution(TrainStationExecution.new(self.city))
 		end
 		self._stationCreated = true
 	end

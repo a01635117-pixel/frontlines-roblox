@@ -86,9 +86,33 @@ function write(name, items) {
 }
 
 fs.mkdirSync(buildDir, { recursive: true });
+// Main waits for every client module by name (CLIENT_MODULES); keep in sync.
+{
+  const mods = fs.readdirSync(path.join(root, "src/client")).filter((f) => f.endsWith(".luau") && !f.endsWith(".client.luau")).map((f) => f.slice(0, -5)).sort();
+  const main = read(path.join(root, "src/client/Main.client.luau"));
+  const m = /local CLIENT_MODULES = {([^}]*)}/.exec(main);
+  const listed = m ? [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]).sort() : [];
+  if (JSON.stringify(mods) !== JSON.stringify(listed)) {
+    throw new Error("Main.client.luau CLIENT_MODULES is out of date; expected: " + mods.join(", "));
+  }
+}
 write("Shared.rbxmx", [sharedTree(path.join(root, "src/shared"), "Shared")]);
 write("Client.rbxmx", scriptTree(path.join(root, "src/client"), ".client.luau", "LocalScript"));
 write("Server.rbxmx", scriptTree(path.join(root, "src/server"), ".server.luau", "Script"));
 // Golden-vector specs; import into ServerStorage (never replicated to players).
 write("Tests.rbxmx", [sharedTree(path.join(root, "tests"), "Tests")]);
 write("Maps.rbxmx", [sharedTree(path.join(root, "src/maps"), "Maps")]);
+
+// Whole place: every build above in its service, so a fresh Studio session is
+// one file (build/OpenFront.rbxlx) instead of five imports.
+const client = scriptTree(path.join(root, "src/client"), ".client.luau", "LocalScript");
+const place = [
+  item("ReplicatedStorage", "ReplicatedStorage", [sharedTree(path.join(root, "src/shared"), "Shared")]),
+  item("ServerScriptService", "ServerScriptService", scriptTree(path.join(root, "src/server"), ".server.luau", "Script")),
+  item("ServerStorage", "ServerStorage", [
+    sharedTree(path.join(root, "tests"), "Tests"),
+    sharedTree(path.join(root, "src/maps"), "Maps"),
+  ]),
+  item("StarterPlayer", "StarterPlayer", [item("StarterPlayerScripts", "StarterPlayerScripts", client)]),
+];
+write("OpenFront.rbxlx", place);

@@ -182,8 +182,28 @@ function PlayerImpl:units(...: any): { any }
 	if n == 0 then
 		return self._units
 	end
-	local wanted = {}
 	local first = ...
+	-- Single-type queries are memoised on _myUnitsVersion (bumped by every
+	-- change to _units); callers get a copy.
+	if n == 1 and type(first) == "string" then
+		local cache = self._unitsByTypeCache
+		if cache == nil or cache.version ~= self._myUnitsVersion then
+			cache = { version = self._myUnitsVersion, lists = {} }
+			self._unitsByTypeCache = cache
+		end
+		local list = cache.lists[first]
+		if list == nil then
+			list = {}
+			for _, u in self._units do
+				if u:type() == first then
+					table.insert(list, u)
+				end
+			end
+			cache.lists[first] = list
+		end
+		return table.clone(list)
+	end
+	local wanted = {}
 	if type(first) == "table" then
 		if #first == 0 then
 			return self._units
@@ -510,8 +530,7 @@ end
 local MAX_UPGRADE_AMOUNT = 50
 
 -- What can be built / upgraded at `tile` (upstream buildableUnits).
--- TODO(port): overlappingRailroads / ghostRailPaths (rail network).
-function PlayerImpl:buildableUnits(tile: number?, units: { string }?)
+function PlayerImpl:buildableUnits(tile: number?, units: { string }?, railsFor: (string | false)?)
 	local mg = self.mg
 	local config = mg:config()
 	local list = units or GameTypes.PlayerBuildable.types
@@ -547,7 +566,19 @@ function PlayerImpl:buildableUnits(tile: number?, units: { string }?)
 				upgradeCosts[n + 1] = total
 			end
 		end
-		table.insert(result, { type = u, canBuild = canBuild, canUpgrade = canUpgrade, cost = cost, upgradeCosts = upgradeCosts })
+		-- railsFor (Roblox): nil = every type (upstream), false = none, a type =
+		-- only that one (the build ghost), so hover queries skip the pathfinding.
+		local buildNew = canBuild ~= false and canUpgrade == false and (railsFor == nil or railsFor == u)
+		local rail = mg:railNetwork()
+		table.insert(result, {
+			type = u,
+			canBuild = canBuild,
+			canUpgrade = canUpgrade,
+			cost = cost,
+			upgradeCosts = upgradeCosts,
+			overlappingRailroads = if buildNew then rail:overlappingRailroads(u, canBuild) else {},
+			ghostRailPaths = if buildNew then rail:computeGhostRailPaths(u, canBuild) else {},
+		})
 	end
 	return result
 end
@@ -719,8 +750,7 @@ function PlayerImpl:spawnTile(): number?
 end
 
 -- Alliances -----------------------------------------------------------------------
--- TODO(port): AllianceImpl / AllianceRequestImpl. The request list lives on
--- the game (mg.allianceRequests) and is empty until alliances are ported.
+-- Pending requests live on the game (mg.allianceRequests).
 
 function PlayerImpl:incomingAllianceRequests(): { any }
 	local out = {}
@@ -773,6 +803,50 @@ function PlayerImpl:allianceWith(other)
 		end
 	end
 	return nil
+end
+
+function PlayerImpl:isRequestingAllianceWith(other): boolean
+	for _, ar in self.mg.allianceRequests do
+		if ar:requestor() == self and ar:recipient() == other then
+			return true
+		end
+	end
+	return false
+end
+
+-- Upstream allianceInfo: expiry and extension state of our alliance with other.
+function PlayerImpl:allianceInfo(other)
+	local alliance = self:allianceWith(other)
+	if not alliance then
+		return nil
+	end
+	local inExtensionWindow = alliance:expiresAt() <= self.mg:ticks() + self.mg:config():allianceExtensionPromptOffset()
+	local canExtend = not self:isDisconnected()
+		and not other:isDisconnected()
+		and self:isAlive()
+		and other:isAlive()
+		and inExtensionWindow
+		and not alliance:agreedToExtend(self)
+	return {
+		expiresAt = alliance:expiresAt(),
+		inExtensionWindow = inExtensionWindow,
+		myPlayerAgreedToExtend = alliance:agreedToExtend(self),
+		otherAgreedToExtend = alliance:agreedToExtend(other),
+		canExtend = canExtend,
+	}
+end
+
+-- Upstream playerProfile: relations by smallID and allied smallIDs.
+function PlayerImpl:playerProfile()
+	local relations = {}
+	for _, row in self:allRelationsSorted() do
+		relations[row.player:smallID()] = row.relation
+	end
+	local alliances = {}
+	for _, a in self._alliances do
+		table.insert(alliances, a:other(self):smallID())
+	end
+	return { relations = relations, alliances = alliances }
 end
 
 function PlayerImpl:canSendAllianceRequest(other): boolean

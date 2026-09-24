@@ -104,9 +104,25 @@ function Theme.new(useClassicBotColors: boolean?)
 	}, Theme)
 end
 
--- playerType: "HUMAN" | "BOT" | "NATION". Returns { rgb = {r,g,b}, border = {r,g,b} }.
--- TODO(port): team games (teamColorForPlayer with generated team palettes).
-function Theme:territoryColor(playerId: string, playerType: string)
+-- Stable per-player variation within a team colour set (teamColorForPlayer).
+function Theme:teamColorForPlayer(team: string, playerId: string)
+	self.teamPlayerColors = self.teamPlayerColors or {}
+	local cached = self.teamPlayerColors[playerId]
+	if cached then
+		return cached
+	end
+	local palette = ThemeColors.teamPalettes[team]
+	local color = if palette then palette[Util.simpleHash(playerId) % #palette + 1] else self.human:assignColor(team)
+	self.teamPlayerColors[playerId] = color
+	return color
+end
+
+-- playerType: "HUMAN" | "BOT" | "NATION"; team: the player's team in team
+-- games. Returns { rgb = {r,g,b}, border = {r,g,b} }.
+function Theme:territoryColor(playerId: string, playerType: string, team: string?)
+	if team ~= nil then
+		return self:teamColorForPlayer(team, playerId)
+	end
 	if playerType == "HUMAN" then
 		return self.human:assignColor(playerId)
 	elseif playerType == "BOT" then

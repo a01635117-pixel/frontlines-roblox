@@ -1,5 +1,8 @@
 -- Event feed, ported from upstream hud/layers/EventsDisplay.ts (bottom
--- right, w-96): server messages (DisplayEvent / UnitIncoming) for us.
+-- right, w-96): server messages (DisplayEvent / UnitIncoming, alliance,
+-- donation, emoji and chat events) for us, plus ActionableEvents.ts: alliance
+-- requests (Focus / Accept / Reject) and renewal prompts (Focus / Request to
+-- renew / Ignore) as cards with a yellow left border above the feed.
 --   * tier 1 (nukes inbound / detonated, naval invasion, conquests, …):
 --     bg-gray-800 panel with a red left border, text-lg
 --   * tier 2 (everything else): bg-gray-800/92, text-sm, last 4 only
@@ -8,6 +11,7 @@
 -- Colours: getMessageTypeClasses (severityColors).
 
 local Style = require(script.Parent.Style)
+local Lang = require(script.Parent.Lang)
 
 local C, F = Style.color, Style.font
 
@@ -91,6 +95,16 @@ local TEXTS = {
 	["events_display.unit_destroyed"] = "Your {unit} was destroyed",
 	["events_display.unit_voluntarily_deleted"] = "Unit voluntarily deleted",
 	["events_display.betrayed_you"] = "{name} broke their alliance with you",
+	["events_display.alliance_request_status"] = "{name} {status} your alliance request",
+	["events_display.alliance_request_sent"] = "Alliance request sent to {name}.",
+	["events_display.betrayal_description"] = "You broke your alliance with {name}, making you a TRAITOR ({malusPercent}% defense debuff for {durationText})",
+	["events_display.alliance_expired"] = "Your alliance with {name} expired",
+	["events_display.sent_gold_to_player"] = "Sent {gold} gold to {name}",
+	["events_display.sent_troops_to_player"] = "Sent {troops} troops to {name}",
+	["events_display.attack_request"] = "{name} requests you attack {target}",
+	["events_display.sent_emoji"] = "Sent {name}: {emoji}",
+	["events_display.request_alliance"] = "{name} requests an alliance!",
+	["events_display.about_to_expire"] = "Your alliance with {name} is about to expire!",
 }
 local UNIT_NAMES = {
 	["unit_type.atom_bomb"] = "Atom Bomb",
@@ -107,11 +121,11 @@ local UNIT_NAMES = {
 }
 
 local function translate(message: string, params): string
-	local text = TEXTS[message] or message
+	local text = Lang.t(TEXTS[message] or message)
 	return (string.gsub(text, "{(%w+)}", function(k)
 		local v = params and params[k]
 		if type(v) == "string" and UNIT_NAMES[v] then
-			return UNIT_NAMES[v]
+			return Lang.t(UNIT_NAMES[v])
 		end
 		return if v ~= nil then tostring(v) else "{" .. k .. "}"
 	end))
@@ -135,26 +149,37 @@ function EventsDisplay.new(deps)
 	self.column = column
 
 	local function panel(name: string, order: number, alpha: number, borderLeft: boolean)
-		local p = Style.frame(column, name, C.gray800, alpha)
-		p.LayoutOrder = order
+		-- Outer frame (background, red left border) + padded row list; the
+		-- border stays out of the list layout. Returns the list frame.
+		local outer = Style.frame(column, name, C.gray800, alpha)
+		outer.LayoutOrder = order
+		outer.Size = UDim2.fromScale(1, 0)
+		outer.AutomaticSize = Enum.AutomaticSize.Y
+		outer.Active = true
+		outer.Visible = false
+		outer.ClipsDescendants = true
+		Style.corner(outer, 8)
+		if borderLeft then
+			local bar = Style.frame(outer, "Border", Color3.fromHex("#ef4444"), 1)
+			bar.Size = UDim2.new(0, 4, 1, 0)
+		end
+		local p = Style.frame(outer, "Rows")
 		p.Size = UDim2.fromScale(1, 0)
 		p.AutomaticSize = Enum.AutomaticSize.Y
-		p.Active = true
-		p.Visible = false
-		Style.corner(p, 8)
 		Style.padding(p, if borderLeft then 10 else 6, 2)
 		Style.column(p, 0)
-		if borderLeft then
-			local bar = Style.frame(p, "Border", Color3.fromHex("#ef4444"), 1)
-			bar.Size = UDim2.new(0, 4, 1, 0)
-			bar.Position = UDim2.fromOffset(-10, 0)
-			local ignore = Instance.new("UIFlexItem")
-			ignore.Parent = bar
-		end
 		return p
 	end
 	self.tier2 = panel("Tier2", 1, 0.92 * 0.9, false)
 	self.tier1 = panel("Tier1", 2, 1, true)
+	self.actionable = {}
+	self.alliancesCheckedAt = {} -- allianceID -> tick prompted
+	local act = Style.frame(column, "Actionable")
+	act.LayoutOrder = 0
+	act.Size = UDim2.fromScale(1, 0)
+	act.AutomaticSize = Enum.AutomaticSize.Y
+	Style.column(act, 8)
+	self.actPanel = act
 
 	task.spawn(function()
 		while column.Parent do
@@ -174,12 +199,12 @@ function EventsDisplay:add(evt)
 		return
 	end
 	local params = evt.params or {}
-	if evt.focusPlayerID and params.name ~= nil then
+	if evt.focusPlayerID and params.name ~= nil and not evt.keepNames then
 		params = table.clone(params)
 		params.name = self.deps.playerName(evt.focusPlayerID) or params.name
 	end
 	table.insert(self.events, {
-		description = if evt.type == "Incoming" then evt.message else translate(evt.message, params),
+		description = if evt.type == "Incoming" or evt.raw then evt.message else translate(evt.message, params),
 		type = evt.messageType,
 		createdAt = self.deps.tickNow(),
 		focusID = evt.focusPlayerID,
@@ -205,6 +230,12 @@ function EventsDisplay:_expire()
 		self.events = keep
 		self.dirty = true
 	end
+	for _, c in self.actionable do
+		if c.duration and now - c.createdAt >= c.duration then
+			self.dirty = true
+			break
+		end
+	end
 end
 
 function EventsDisplay:_row(parent: Frame, e, order: number, big: boolean)
@@ -226,6 +257,7 @@ end
 
 function EventsDisplay:_render()
 	self.dirty = false
+	self:_renderActionable()
 	for _, p in { self.tier1, self.tier2 } do
 		for _, c in p:GetChildren() do
 			if c:IsA("TextButton") then
@@ -247,12 +279,217 @@ function EventsDisplay:_render()
 	for i, e in t2 do
 		self:_row(self.tier2, e, i, false)
 	end
-	self.tier1.Visible = visible and #t1 > 0
-	self.tier2.Visible = visible and #t2 > 0
+	self.tier1.Parent.Visible = visible and #t1 > 0
+	self.tier2.Parent.Visible = visible and #t2 > 0
 end
 
 function EventsDisplay:refresh()
 	self.dirty = true
+end
+
+-- ActionableEvents -------------------------------------------------------------------------
+
+local BUTTON_COLORS = {
+	gray = C.gray500,
+	green = Color3.fromHex("#16a34a"),
+	blue = Color3.fromHex("#3b82f6"),
+}
+
+function EventsDisplay:_addActionable(card)
+	table.insert(self.actionable, card)
+	self.dirty = true
+end
+
+function EventsDisplay:_removeActionable(pred: (any) -> boolean)
+	local keep = {}
+	for _, c in self.actionable do
+		if not pred(c) then
+			table.insert(keep, c)
+		end
+	end
+	if #keep ~= #self.actionable then
+		self.actionable = keep
+		self.dirty = true
+	end
+end
+
+-- AllianceRequest update addressed to us.
+function EventsDisplay:allianceRequest(requestor: number, duration: number)
+	local deps = self.deps
+	if deps.alive and not deps.alive() then
+		return
+	end
+	local name = deps.playerName(requestor) or "?"
+	self:_removeActionable(function(c)
+		return c.type == MT.ALLIANCE_REQUEST and c.requestorID == requestor
+	end)
+	self:_addActionable({
+		description = translate("events_display.request_alliance", { name = name }),
+		type = MT.ALLIANCE_REQUEST,
+		createdAt = deps.tickNow(),
+		duration = duration,
+		priority = 0,
+		focusID = requestor,
+		requestorID = requestor,
+		buttons = {
+			{ text = "Focus", color = "gray", preventClose = true, action = function()
+				deps.focusPlayer(requestor)
+			end },
+			{ text = "Accept", color = "green", action = function()
+				deps.sendIntent({ type = "alliance_request", target = requestor })
+			end },
+			{ text = "Reject", color = "blue", action = function()
+				deps.sendIntent({ type = "alliance_reject", target = requestor })
+			end },
+		},
+	})
+end
+
+function EventsDisplay:allianceRequestResolved(requestor: number)
+	self:_removeActionable(function(c)
+		return c.type == MT.ALLIANCE_REQUEST and c.focusID == requestor
+	end)
+end
+
+function EventsDisplay:allianceGone(allianceID: number)
+	self:_removeActionable(function(c)
+		return c.type == MT.RENEW_ALLIANCE and c.allianceID == allianceID
+	end)
+	self.alliancesCheckedAt[allianceID] = nil
+end
+
+-- Per Me update: drop requests nobody makes any more, prompt renewals
+-- (checkForAllianceExpirations) and forget alliances that ended.
+function EventsDisplay:updateAlliances(me)
+	if not me.alliances then
+		return
+	end
+	local asking = {}
+	for _, id in me.requestsIn or {} do
+		asking[id] = true
+	end
+	self:_removeActionable(function(c)
+		return c.type == MT.ALLIANCE_REQUEST and not asking[c.requestorID]
+	end)
+	local deps = self.deps
+	local tick, offset = me.tick, me.extensionPromptOffset or 0
+	local current = {}
+	for _, a in me.alliances do
+		current[a.id] = true
+		if a.expiresAt > tick + offset then
+			continue
+		end
+		if (self.alliancesCheckedAt[a.id] or 0) >= tick - offset then
+			continue
+		end
+		self.alliancesCheckedAt[a.id] = tick
+		local other = a.other
+		local name = deps.playerName(other) or "?"
+		self:_addActionable({
+			description = translate("events_display.about_to_expire", { name = name }),
+			type = MT.RENEW_ALLIANCE,
+			createdAt = deps.tickNow(),
+			focusID = other,
+			requestorID = other,
+			allianceID = a.id,
+			buttons = {
+				{ text = "Focus", color = "gray", preventClose = true, action = function()
+					deps.focusPlayer(other)
+				end },
+				{ text = "Request to renew", color = "green", action = function()
+					deps.sendIntent({ type = "alliance_extend", target = other })
+				end },
+				{ text = "Ignore", color = "blue", action = function() end },
+			},
+		})
+	end
+	for id in self.alliancesCheckedAt do
+		if not current[id] then
+			self:allianceGone(id)
+		end
+	end
+end
+
+function EventsDisplay:_renderActionable()
+	local panel = self.actPanel
+	for _, c in panel:GetChildren() do
+		if c:IsA("Frame") then
+			c:Destroy()
+		end
+	end
+	local now = self.deps.tickNow()
+	local keep = {}
+	for _, c in self.actionable do
+		if c.duration == nil or now - c.createdAt < c.duration then
+			table.insert(keep, c)
+		end
+	end
+	self.actionable = keep
+	local sorted = table.clone(keep)
+	table.sort(sorted, function(a, b)
+		local pa, pb = a.priority or 100000, b.priority or 100000
+		if pa == pb then
+			return a.createdAt > b.createdAt
+		end
+		return pa > pb
+	end)
+	-- ActionableEvents hides entirely once our player is dead.
+	local alive = self.deps.alive == nil or self.deps.alive()
+	if not alive and #self.actionable > 0 then
+		self.actionable = {}
+		sorted = {}
+	end
+	local visible = self.deps.visible()
+	panel.Visible = visible and alive and #sorted > 0
+	for i, card in sorted do
+		-- Card: yellow left border (border-l-4) outside the padded content, so it
+		-- never takes part in the content layout.
+		local card0 = Style.frame(panel, "Card", C.gray800, 0.92)
+		card0.LayoutOrder = i
+		card0.Size = UDim2.fromScale(1, 0)
+		card0.AutomaticSize = Enum.AutomaticSize.Y
+		card0.Active = true
+		card0.ClipsDescendants = true
+		Style.corner(card0, 8)
+		local bar = Style.frame(card0, "Border", C.yellow400, 1)
+		bar.Size = UDim2.new(0, 4, 1, 0)
+		local f = Style.frame(card0, "Content")
+		f.Size = UDim2.fromScale(1, 0)
+		f.AutomaticSize = Enum.AutomaticSize.Y
+		Style.padding(f, 14, 10)
+		Style.column(f, 8)
+		local d = Style.button(f, "Description", card.description, 15, F.semibold, severity(card.type))
+		d.LayoutOrder = 1
+		d.AutomaticSize = Enum.AutomaticSize.Y
+		d.Size = UDim2.fromScale(1, 0)
+		d.TextWrapped = true
+		d.TextXAlignment = Enum.TextXAlignment.Left
+		d.Activated:Connect(function()
+			self.deps.focusPlayer(card.focusID)
+		end)
+		local row = Style.frame(f, "Buttons")
+		row.LayoutOrder = 2
+		row.Size = UDim2.fromScale(1, 0)
+		row.AutomaticSize = Enum.AutomaticSize.Y
+		local rl = Style.row(row, 6)
+		rl.Wraps = true
+		for j, btn in card.buttons do
+			local b = Style.button(row, btn.text, btn.text, 13, F.medium)
+			b.LayoutOrder = j
+			b.BackgroundColor3 = BUTTON_COLORS[btn.color]
+			b.BackgroundTransparency = 0
+			Style.corner(b, 3)
+			Style.padding(b, 12, 4)
+			b.Activated:Connect(function()
+				btn.action()
+				if not btn.preventClose then
+					self:_removeActionable(function(c)
+						return c == card
+					end)
+				end
+			end)
+		end
+	end
 end
 
 return EventsDisplay

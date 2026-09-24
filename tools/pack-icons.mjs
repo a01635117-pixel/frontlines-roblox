@@ -43,6 +43,15 @@ const ICONS = {
   donateTroop: "DonateTroopIconWhite.svg",
   emoji: "EmojiIconWhite.svg",
   chat: "ChatIconWhite.svg",
+  // Player panel (PlayerPanel.ts) and name icons (PlayerIcons.ts).
+  stopTrading: "StopIconWhite.svg",
+  startTrading: "TradingIconWhite.svg",
+  allianceRequest: "AllianceRequestWhiteIcon.svg",
+  crown: "CrownIcon.svg",
+  disconnected: "DisconnectedIcon.svg",
+  embargo: "EmbargoWhiteIcon.svg",
+  nukeRed: "NukeIconRed.svg",
+  targetRed: "TargetIcon.svg",
 };
 
 function render(file) {

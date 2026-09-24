@@ -4,6 +4,7 @@
 local GuiService = game:GetService("GuiService")
 
 local Format = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Format"))
+local Lang = require(script.Parent.Lang)
 
 local PANEL_COLOR = Color3.fromRGB(24, 26, 32)
 local PANEL_TRANSPARENCY = 0.2
@@ -101,9 +102,25 @@ function Hud.new(gui: ScreenGui)
 	layout.SortOrder = Enum.SortOrder.LayoutOrder
 	layout.Padding = UDim.new(0, 2)
 	layout.Parent = board
-	local header = label(board, "Header", "Leaderboard", 15, FONT_BOLD)
+	-- Header toggles the rows (upstream GameLeftSidebar leaderboard toggle);
+	-- collapsed from the start on phone-sized screens.
+	local header = Instance.new("TextButton")
+	header.Name = "Header"
+	header.BackgroundTransparency = 1
+	header.Font = FONT_BOLD
+	header.TextSize = 15
+	header.TextColor3 = TEXT
+	header.TextXAlignment = Enum.TextXAlignment.Left
 	header.Size = UDim2.new(1, 0, 0, 20)
 	header.LayoutOrder = 0
+	header.Parent = board
+	local viewport = workspace.CurrentCamera.ViewportSize
+	self.boardOpen = viewport.Y >= 500 and viewport.X >= 900
+	self.board, self.boardHeader = board, header
+	header.Activated:Connect(function()
+		self.boardOpen = not self.boardOpen
+		self:_paintBoard()
+	end)
 	self.boardRows = {}
 	for i = 1, 10 do
 		local row = Instance.new("Frame")
@@ -174,8 +191,22 @@ function Hud.new(gui: ScreenGui)
 	modalButton.Activated:Connect(function()
 		modal.Visible = false
 	end)
+	-- Optional second action (e.g. "Find new match").
+	local modalButton2 = modalButton:Clone()
+	modalButton2.Name = "Button2"
+	modalButton2.BackgroundColor3 = Color3.fromRGB(55, 65, 81)
+	modalButton2.LayoutOrder = 3
+	modalButton2.Visible = false
+	modalButton2.Parent = modal
+	modalButton2.Activated:Connect(function()
+		modal.Visible = false
+		if self.modalAction2 then
+			self.modalAction2()
+		end
+	end)
 	modal.Visible = false
-	self.modal, self.modalTitle, self.modalButton = modal, modalTitle, modalButton
+	self.modal, self.modalTitle, self.modalButton, self.modalButton2 = modal, modalTitle, modalButton, modalButton2
+	self:_paintBoard()
 
 	return self
 end
@@ -189,11 +220,20 @@ function Hud:setCountdown(seconds: (number | string)?, subtitle: string?)
 	end
 end
 
+function Hud:_paintBoard()
+	self.boardHeader.Text = (if self.boardOpen then "–  " else "+  ") .. Lang.t("Leaderboard")
+	self.board.Size = UDim2.fromOffset(if self.boardOpen then 260 else 150, 0)
+	for i, r in self.boardRows do
+		r.frame.Visible = self.boardOpen and self.boardData ~= nil and self.boardData[i] ~= nil
+	end
+end
+
 -- rows: { { name, pct (0-1), troops, isMe } }
 function Hud:setLeaderboard(rows)
+	self.boardData = rows
 	for i, r in self.boardRows do
 		local data = rows[i]
-		r.frame.Visible = data ~= nil
+		r.frame.Visible = self.boardOpen and data ~= nil
 		if data then
 			r.name.Text = `{i}. {data.name}`
 			r.name.Font = if data.isMe then FONT_BOLD else FONT
@@ -214,8 +254,11 @@ end
 -- Modal with a title and one dismiss button (upstream WinModal texts:
 -- "You died" + "Spectate", "You Won!" / "X has won!" + "OK"; no "Keep Playing"
 -- on Roblox servers, a new match follows).
--- TODO(port): "Play Again" once there is a lobby to return to.
-function Hud:showModal(title: string, buttonText: string, isWin: boolean?)
+-- secondText / secondAction: optional second button (matchmaking).
+function Hud:showModal(title: string, buttonText: string, isWin: boolean?, secondText: string?, secondAction: (() -> ())?)
+	self.modalButton2.Visible = secondText ~= nil
+	self.modalButton2.Text = secondText or ""
+	self.modalAction2 = secondAction
 	self.modalTitle.Text = title
 	self.modalTitle.TextColor3 = if isWin then Color3.fromRGB(255, 214, 90) else TEXT
 	self.modalButton.Text = buttonText

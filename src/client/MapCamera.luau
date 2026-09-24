@@ -31,6 +31,7 @@ function MapCamera.new(background: Frame, W: number, H: number)
 		_tiles = {},
 		_connections = {},
 		onClick = nil :: ((Vector2) -> ())?,
+		onTap = nil :: ((Vector2) -> ())?,
 		onRightClick = nil :: ((Vector2) -> ())?,
 		onShiftScroll = nil :: ((number) -> ())?,
 		onHover = nil :: ((Vector2) -> ())?,
@@ -192,8 +193,13 @@ function MapCamera:_bindInput()
 
 	-- Touch: tap to act, one-finger pan, two-finger pinch zoom.
 	connect(UserInputService.TouchTap, function(positions, processed)
-		if not processed and self.onClick and #positions == 1 then
-			self.onClick(touchPos(positions[1]))
+		if processed or #positions ~= 1 then
+			return
+		end
+		-- Upstream TouchEvent: touch taps get their own handler (radial menu).
+		local handler = self.onTap or self.onClick
+		if handler then
+			handler(touchPos(positions[1]))
 		end
 	end)
 

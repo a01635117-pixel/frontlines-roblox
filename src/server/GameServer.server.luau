@@ -9,8 +9,8 @@
 -- SinglePlayerModal / HostLobbyModal); everyone sees them live. The host
 -- starts the match; live public servers also auto-start after a countdown.
 --
--- Script attributes (optional): AutoStartSeconds (default 60 live, none in
--- Studio — the host presses Start).
+-- Script attributes (optional): AutoStartSeconds (public lobby countdown,
+-- default 60), LobbyMode ("public" / "custom", Studio tests).
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -23,8 +23,14 @@ local GameRunner = require(script.Parent.Core.GameRunner)
 local GameTypes = require(script.Parent.Core.GameTypes)
 local Util = require(Shared.Util)
 local NameBoxCalculator = require(script.Parent.Core.NameBoxCalculator)
+local Format = require(Shared.Format)
+local Matchmaking = require(script.Parent.Matchmaking)
+
+-- The game is a 2D map: no avatars (and so no touch thumbstick / jump button).
+Players.CharacterAutoLoads = false
 
 local AUTO_START_SECONDS = script:GetAttribute("AutoStartSeconds") or (if RunService:IsStudio() then nil else 60)
+local PUBLIC_BOTS = 250
 local TICK_SECONDS = 0.1 -- Config.msPerTick() = 100
 local STATS_EVERY = 5 -- ticks between stats broadcasts
 local MAX_INTENTS_PER_TICK = 10 -- per player
@@ -36,38 +42,73 @@ local function clientIDOf(player: Player): string
 	return tostring(player.UserId)
 end
 
--- Per-user settings (upstream keeps them in localStorage). Only the tutorial
--- "Don't show again" flag so far. DataStores fail in Studio without API
--- access; everything here is best effort.
-local settingsStore = nil
-pcall(function()
-	settingsStore = game:GetService("DataStoreService"):GetDataStore("UserSettings")
-end)
-local userSettings = {} -- UserId -> settings table
+-- Profiles (settings, cosmetics, stats) and the cosmetics shop live in
+-- modules that outlast match restarts; start() is idempotent.
+local Profiles = require(script.Parent.Profiles)
+local ShopService = require(script.Parent.ShopService)
+Profiles.start()
+ShopService.start()
 
+-- Per-user settings (upstream keeps them in localStorage): the tutorial
+-- "Don't show again" flag.
 local function loadSettings(player: Player)
-	if userSettings[player.UserId] then
-		return userSettings[player.UserId]
-	end
-	local data = nil
-	if settingsStore then
-		pcall(function()
-			data = settingsStore:GetAsync(tostring(player.UserId))
-		end)
-	end
-	userSettings[player.UserId] = if type(data) == "table" then data else {}
-	return userSettings[player.UserId]
+	local data = Profiles.get(player.UserId, 5)
+	return if data then data.settings else {}
 end
 
 local function saveSetting(player: Player, key: string, value: any)
-	local settings = loadSettings(player)
-	settings[key] = value
-	if settingsStore then
-		task.spawn(pcall, function()
-			settingsStore:SetAsync(tostring(player.UserId), settings)
-		end)
+	local data = Profiles.get(player.UserId, 5)
+	if data then
+		data.settings[key] = value
+		Profiles.markDirty(player.UserId)
 	end
 end
+
+-- Per-player token buckets against remote spam (exploit clients): Query
+-- runs buildableUnits, matchmaking calls MemoryStore / ReserveServer.
+local buckets = {}
+local function allow(player: Player, kind: string, perSecond: number, burst: number): boolean
+	local key = player.UserId .. ":" .. kind
+	local now = os.clock()
+	local b = buckets[key]
+	if b == nil then
+		b = { tokens = burst, at = now }
+		buckets[key] = b
+	end
+	b.tokens = math.min(burst, b.tokens + (now - b.at) * perSecond)
+	b.at = now
+	if b.tokens < 1 then
+		return false
+	end
+	b.tokens -= 1
+	return true
+end
+Players.PlayerRemoving:Connect(function(player)
+	local prefix = player.UserId .. ":"
+	for key in buckets do
+		if string.sub(key, 1, #prefix) == prefix then
+			buckets[key] = nil
+		end
+	end
+end)
+
+-- Shop remote calls (lobby and match): Query kind "shop" and intent "equip".
+local function shopQuery(player: Player, q)
+	if type(q) == "table" and q.kind == "shop" then
+		if not allow(player, "shop", 2, 5) then
+			return nil
+		end
+		return ShopService.state(player.UserId)
+	end
+	return nil
+end
+Net.Query.OnServerInvoke = shopQuery
+Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
+	if type(intent) == "table" and intent.type == "equip" and type(intent.slot) == "string" and allow(player, "equip", 2, 5) then
+		local item = if type(intent.itemId) == "string" then intent.itemId else nil
+		ShopService.equip(player.UserId, intent.slot, item)
+	end
+end)
 
 -- Lobby ---------------------------------------------------------------------------
 
@@ -78,26 +119,49 @@ local DIFFICULTIES = { "Easy", "Medium", "Hard", "Impossible" }
 local STARTING_GOLD = { 0, 1000000, 5000000, 25000000 }
 local GOLD_MULTIPLIER = { 1, 2, 5 }
 local MAX_BOTS = 400
--- Units the host may disable (not ported yet: Factory, forced off).
-local FORCED_OFF = { Factory = true }
+-- Units forced off whatever the host picks (none: everything is ported).
+local FORCED_OFF: { [string]: boolean } = {}
 
 local lobby = {
 	settings = {
 		map = "World",
+		mode = "ffa", -- "ffa", 2..7 teams, "Duos"/"Trios"/"Quads", "Humans Vs Nations"
 		difficulty = "Medium",
 		bots = 250,
-		nations = false, -- TODO(port): nations (the toggle unlocks once they exist)
+		nations = 72, -- World's nation count; reset to the map's on map change
 		infiniteGold = false,
 		infiniteTroops = false,
 		instantBuild = false,
+		randomSpawn = false,
 		startingGold = 0,
 		goldMultiplier = 1,
-		disabledUnits = { "Factory" },
+		disabledUnits = {},
 	},
 	hostUserId = nil :: number?,
 	startAt = nil :: number?,
 	started = false,
+	-- "public": no host, rotating settings, auto start, listed for
+	-- matchmaking; "custom": a host picks the settings and starts (VIP and
+	-- private-match servers, and Studio for testing).
+	mode = "custom",
+	joinCode = nil :: string?,
 }
+
+-- Public lobbies rotate maps by their playlist frequency (MapCatalog).
+local function rotationMap(): string
+	local total = 0
+	for _, m in MapCatalog do
+		total += m.frequency or 1
+	end
+	local r = Random.new():NextNumber() * total
+	for _, m in MapCatalog do
+		r -= m.frequency or 1
+		if r <= 0 and ServerStorage.Maps:FindFirstChild(m.id) then
+			return m.id
+		end
+	end
+	return "World"
+end
 
 local function mapInfo(id: string)
 	for _, m in MapCatalog do
@@ -109,6 +173,14 @@ local function mapInfo(id: string)
 end
 
 local function pickHost()
+	if lobby.mode == "public" then
+		lobby.hostUserId = nil
+		return
+	end
+	if lobby.preferredHost and Players:GetPlayerByUserId(lobby.preferredHost) then
+		lobby.hostUserId = lobby.preferredHost
+		return
+	end
 	local owner = game.PrivateServerOwnerId
 	if owner ~= 0 and Players:GetPlayerByUserId(owner) then
 		lobby.hostUserId = owner
@@ -131,6 +203,9 @@ local function lobbyState()
 		hostUserId = lobby.hostUserId,
 		secondsLeft = if lobby.startAt then math.max(0, math.ceil(lobby.startAt - os.clock())) else nil,
 		players = names,
+		mode = lobby.mode,
+		joinCode = lobby.joinCode,
+		canMatchmake = Matchmaking.available(),
 	}
 end
 
@@ -144,16 +219,22 @@ local function setLobbySetting(key: string, value: any)
 	if key == "map" then
 		if type(value) == "string" and mapInfo(value) and ServerStorage.Maps:FindFirstChild(value) then
 			st.map = value
+			-- Upstream loadNationCount: the slider resets to the map's nations.
+			st.nations = mapInfo(value).nations
+		end
+	elseif key == "mode" then
+		if value == "ffa" or value == "Duos" or value == "Trios" or value == "Quads" or value == "Humans Vs Nations" or (type(value) == "number" and value >= 2 and value <= 7 and value % 1 == 0) then
+			st.mode = value
 		end
 	elseif key == "difficulty" then
 		if table.find(DIFFICULTIES, value) then
 			st.difficulty = value
 		end
-	elseif key == "bots" then
+	elseif key == "bots" or key == "nations" then
 		if type(value) == "number" and value == value then
-			st.bots = math.clamp(math.floor(value), 0, MAX_BOTS)
+			st[key] = math.clamp(math.floor(value), 0, MAX_BOTS)
 		end
-	elseif key == "infiniteGold" or key == "infiniteTroops" or key == "instantBuild" then
+	elseif key == "infiniteGold" or key == "infiniteTroops" or key == "instantBuild" or key == "randomSpawn" then
 		if type(value) == "boolean" then
 			st[key] = value
 		end
@@ -178,6 +259,26 @@ local function setLobbySetting(key: string, value: any)
 		end
 	end
 end
+
+Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
+	if type(intent) ~= "table" then
+		return
+	end
+	local mm = intent.type == "find_match" or intent.type == "create_private" or intent.type == "join_code"
+	if mm and not allow(player, "matchmaking", 0.2, 2) then
+		return -- one teleport request per 5 s (burst 2)
+	end
+	if intent.type == "find_match" then
+		Matchmaking.findMatch(player)
+	elseif intent.type == "create_private" then
+		Matchmaking.createPrivate(player)
+	elseif intent.type == "join_code" and type(intent.code) == "string" and #intent.code <= 12 then
+		local ok = Matchmaking.joinByCode(player, intent.code)
+		if not ok then
+			Net.Event:FireClient(player, { type = "JoinCodeFailed" })
+		end
+	end
+end)
 
 local lobbyConn = Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 	if lobby.started or type(intent) ~= "table" or player.UserId ~= lobby.hostUserId then
@@ -204,9 +305,28 @@ end)
 while #Players:GetPlayers() == 0 do
 	Players.PlayerAdded:Wait()
 end
+Matchmaking.learnAccessCode()
+do
+	local kind, host = Matchmaking.serverKind()
+	-- Attribute LobbyMode ("public" / "custom") overrides, for Studio tests.
+	lobby.mode = script:GetAttribute("LobbyMode") or (if RunService:IsStudio() then "custom" else kind)
+	lobby.preferredHost = host
+end
+if lobby.mode == "public" then
+	local st0 = lobby.settings
+	st0.map = rotationMap()
+	st0.nations = mapInfo(st0.map).nations
+	st0.bots = PUBLIC_BOTS
+	-- Every fourth public match or so is a team game (2-4 teams).
+	local rng = Random.new()
+	st0.mode = if rng:NextNumber() < 0.25 then rng:NextInteger(2, 4) else "ffa"
+elseif Matchmaking.accessCode then
+	-- Private match: friends join with this code from any lobby.
+	lobby.joinCode = Matchmaking.registerJoinCode()
+end
 pickHost()
-if AUTO_START_SECONDS then
-	lobby.startAt = os.clock() + AUTO_START_SECONDS
+if lobby.mode == "public" then
+	lobby.startAt = os.clock() + (AUTO_START_SECONDS or 60)
 end
 broadcastLobby()
 local lastBroadcast = os.clock()
@@ -218,9 +338,13 @@ while not lobby.started do
 	if os.clock() - lastBroadcast >= 1 then
 		lastBroadcast = os.clock()
 		broadcastLobby()
+		if lobby.mode == "public" and lobby.startAt and math.floor(lastBroadcast) % 5 == 0 then
+			Matchmaking.publish(os.time() + math.ceil(lobby.startAt - os.clock()), #Players:GetPlayers(), Players.MaxPlayers)
+		end
 	end
 	task.wait(0.1)
 end
+Matchmaking.unpublish()
 lobbyConn:Disconnect()
 joinConn:Disconnect()
 leaveConn:Disconnect()
@@ -265,17 +389,20 @@ local runner = GameRunner.create({
 		-- Win only at 95 % land with nobody else able to afford a MIRV; no
 		-- timers, no "keep playing" (WinCheck:_hasWonRoblox).
 		robloxWinRule = true,
-		gameMode = "Free For All",
+		gameMode = if st.mode == "ffa" then "Free For All" else "Team",
+		playerTeams = if st.mode == "ffa" then nil else st.mode,
 		gameMapSize = "Compact",
 		bots = st.bots,
-		randomSpawn = false,
+		randomSpawn = st.randomSpawn,
 		infiniteGold = st.infiniteGold,
 		infiniteTroops = st.infiniteTroops,
 		instantBuild = st.instantBuild,
 		startingGold = if st.startingGold > 0 then st.startingGold else nil,
 		goldMultiplier = if st.goldMultiplier ~= 1 then st.goldMultiplier else nil,
 		disabledUnits = disabledUnits,
-		nations = if st.nations then "default" else "disabled",
+		-- 0 = disabled, else exactly that many (manifest nations first). The
+		-- count is explicit because "default" on a public compact map means 25 %.
+		nations = if st.nations == 0 then "disabled" else st.nations,
 	},
 	players = players,
 }, ServerStorage.Maps[MAP_ID])
@@ -288,6 +415,7 @@ print(`[GameServer] game {gameID} on {MAP_ID} with {#players} human(s) and {BOTS
 local rosterSent = 0
 
 local function rosterEntry(p)
+	local userId = p:type() == "HUMAN" and tonumber(p:clientID())
 	return {
 		smallID = p:smallID(),
 		id = p:id(),
@@ -295,8 +423,18 @@ local function rosterEntry(p)
 		type = p:type(),
 		clientID = p:clientID(),
 		team = p:team(),
+		-- Cosmetics (pattern id, name colour, supporter badge); humans only.
+		cosmetics = if userId then ShopService.cosmetics(userId) else nil,
 	}
 end
+
+-- Cosmetics bought / equipped / loaded mid-match: resend that roster entry.
+ShopService.Changed:Connect(function(userId: number)
+	local p = mg:playerByClientID(tostring(userId))
+	if p and p:smallID() <= rosterSent then
+		Net.Roster:FireAllClients({ rosterEntry(p) })
+	end
+end)
 
 local function newRosterEntries()
 	local all = mg:allPlayers()
@@ -346,6 +484,10 @@ local function updateNames(wasInSpawnPhase: boolean)
 	end
 end
 
+-- Railroads (id -> tiles), rebuilt from the construction / destruction /
+-- snap events (upstream RailroadCache) for late joiners.
+local railroads = {}
+
 local function fullState(forPlayer: Player)
 	local roster = {}
 	for _, p in mg:allPlayers() do
@@ -361,6 +503,9 @@ local function fullState(forPlayer: Player)
 		spawnPhaseTurns = mg:config():numSpawnPhaseTurns(),
 		-- Singleplayer has no spawn timer (upstream GameRunner.init).
 		hasSpawnTimer = mg:config():gameConfig().gameType ~= "Singleplayer",
+		canMatchmake = Matchmaking.available() and lobby.mode == "public",
+		randomSpawn = mg:config():isRandomSpawn(),
+		alliancesDisabled = mg:config():disableAlliances(),
 		yourClientID = clientIDOf(forPlayer),
 		tutorialDismissed = loadSettings(forPlayer).tutorialDismissed == true,
 		disabledUnits = (function()
@@ -373,15 +518,42 @@ local function fullState(forPlayer: Player)
 		players = roster,
 		tiles = Net.wrap(copy),
 		names = Net.packNames(nameRows()),
+		rails = (function()
+			local list = {}
+			for id, tiles in railroads do
+				table.insert(list, { id = id, tiles = tiles })
+			end
+			return list
+		end)(),
 		units = (function()
 			local list = {}
 			for _, u in mg:units() do
 				local up = u:toUpdate()
-				table.insert(list, { id = up.id, unitType = up.unitType, ownerID = up.ownerID, pos = up.pos, troops = up.troops, isActive = true, isRetreating = up.isRetreating, level = up.level, underConstruction = up.underConstruction, markedForDeletion = up.markedForDeletion ~= false, targetTile = up.targetTile, plan = mg:motionPlan(up.id), health = up.health, maxHealth = up.maxHealth, targetable = up.targetable, targetUnitId = up.targetUnitId, warshipRetreating = up.warshipRetreating })
+				table.insert(list, { id = up.id, unitType = up.unitType, ownerID = up.ownerID, pos = up.pos, troops = up.troops, isActive = true, isRetreating = up.isRetreating, level = up.level, underConstruction = up.underConstruction, markedForDeletion = up.markedForDeletion ~= false, targetTile = up.targetTile, plan = mg:motionPlan(up.id), health = up.health, maxHealth = up.maxHealth, targetable = up.targetable, targetUnitId = up.targetUnitId, warshipRetreating = up.warshipRetreating, trainType = up.trainType, loaded = up.loaded, missileTimers = up.missileTimers, reloadTicks = up.reloadTicks })
 			end
 			return list
 		end)(),
 	}
+end
+
+-- Name status icons shared by everyone (StatusIconProgram): traitors and
+-- disconnected players; sent when the sets change.
+local lastFlags = ""
+local function broadcastFlags()
+	local traitors, disconnected = {}, {}
+	for _, p in mg:players() do
+		if p:isTraitor() then
+			table.insert(traitors, p:smallID())
+		end
+		if p:isDisconnected() then
+			table.insert(disconnected, p:smallID())
+		end
+	end
+	local key = table.concat(traitors, ",") .. "|" .. table.concat(disconnected, ",")
+	if key ~= lastFlags then
+		lastFlags = key
+		Net.Event:FireAllClients({ type = "Flags", traitors = traitors, disconnected = disconnected })
+	end
 end
 
 local function statsRows()
@@ -403,8 +575,13 @@ for _, p in Players:GetPlayers() do
 end
 rosterSent = #mg:allPlayers()
 Players.PlayerAdded:Connect(function(p)
-	-- Late joiners watch; TODO(port): lobby/matchmaking for new matches.
+	-- Late joiners watch; on public servers they are offered (and after a
+	-- few seconds sent to) a lobby that is about to start.
 	sendState(p)
+	if lobby.mode == "public" and Matchmaking.available() then
+		Net.Event:FireClient(p, { type = "MatchInProgress", autoSeconds = 8 })
+	end
+	lastFlags = "" -- resend name flags
 end)
 
 -- Intents -------------------------------------------------------------------------
@@ -412,9 +589,12 @@ end)
 local pending = {} -- queued intents for the next tick
 local intentCount = {} -- clientID -> count this tick
 
+-- Tick cost (ms) since match start; read by load tests.
+local tickPerf = { n = 0, total = 0, max = 0, slow = 0 }
+
 -- Studio-only handle for debugging from the command bar / MCP.
 if RunService:IsStudio() then
-	_G.OpenFront = { game = mg, runner = runner }
+	_G.OpenFront = { game = mg, runner = runner, perf = tickPerf }
 end
 
 local function isInt(v): boolean
@@ -449,9 +629,112 @@ local function deletableAt(me, tile: number)
 end
 
 -- Build menu query: what the asking player can build / upgrade / delete at a tile.
+local interactionFor, playerPanelData
+local recentIntents
+
+-- Upstream GameRunner.playerActions().interaction.
+function interactionFor(me, other)
+	return {
+		sharedBorder = me:sharesBorderWith(other),
+		canSendEmoji = me:canSendEmoji(other),
+		canTarget = me:canTarget(other),
+		canSendAllianceRequest = me:canSendAllianceRequest(other),
+		canBreakAlliance = me:isAlliedWith(other),
+		canDonateGold = me:canDonateGold(other),
+		canDonateTroops = me:canDonateTroops(other),
+		canEmbargo = not me:hasEmbargoAgainst(other),
+		allianceInfo = me:allianceInfo(other),
+		isAllied = me:isAlliedWith(other),
+		isFriendly = me:isFriendly(other),
+		isDisconnected = other:isDisconnected(),
+	}
+end
+
+-- PlayerPanel data for the tile's owner.
+function playerPanelData(me, other, interaction)
+	if other == nil then
+		return nil
+	end
+	local alliances = {}
+	for _, a in other:alliances() do
+		local ally = a:other(other)
+		table.insert(alliances, { smallID = ally:smallID(), name = ally:displayName(), expiresAt = a:expiresAt() })
+	end
+	local relationToMe = nil
+	if other:type() == "NATION" then
+		relationToMe = other:relation(me)
+	end
+	return {
+		smallID = other:smallID(),
+		name = other:displayName(),
+		playerType = other:type(),
+		isSelf = other == me,
+		gold = other:gold(),
+		troops = other:troops(),
+		betrayals = other:betrayals(),
+		traitorTicks = if other:isTraitor() then other:getTraitorRemainingTicks() else nil,
+		embargoAgainstMe = other:hasEmbargoAgainst(me),
+		alliances = alliances,
+		relationToMe = relationToMe,
+		isAlliedWithMe = me:isAlliedWith(other),
+		tick = mg:ticks(),
+		interaction = if other ~= me then interaction else nil,
+		canSendEmojiAllPlayers = me:canSendEmoji(GameTypes.AllPlayers),
+		canEmbargoAll = me:canEmbargoAll(),
+		myGold = me:gold(),
+		myTroops = me:troops(),
+		capacity = math.max(0, mg:config():maxTroops(other) - other:troops()),
+	}
+end
+
+-- Death diagnostics (server log): recent intents per clientID and, per
+-- living human, the attacks against it on the previous tick.
+recentIntents = {} :: { [string]: { string } }
+local lastThreats = {}
+local function checkHumanDeaths()
+	for _, p in mg:players() do
+		if p:type() ~= "HUMAN" then
+			continue
+		end
+		local clientID = p:clientID()
+		if p:numTilesOwned() > 0 then
+			local rows = {}
+			for _, a in p:incomingAttacks() do
+				table.insert(rows, string.format("%s(%s) %d troops", a:attacker():name(), a:attacker():type(), math.floor(a:troops())))
+			end
+			local out = 0
+			for _, a in p:outgoingAttacks() do
+				out += a:troops()
+			end
+			lastThreats[clientID] = { tiles = p:numTilesOwned(), troops = p:troops(), out = out, incoming = rows }
+		elseif lastThreats[clientID] then
+			local t = lastThreats[clientID]
+			lastThreats[clientID] = nil
+			warn(string.format(
+				"[DeathLog] %s died at tick %d. Before: %d tiles, %d troops home, %d troops attacking. Incoming: %s. Recent intents: %s",
+				p:name(),
+				mg:ticks(),
+				t.tiles,
+				math.floor(t.troops),
+				math.floor(t.out),
+				if #t.incoming > 0 then table.concat(t.incoming, "; ") else "none",
+				table.concat(recentIntents[clientID] or {}, " | ")
+			))
+		end
+	end
+end
+
 Net.Query.OnServerInvoke = function(player: Player, q)
+	local shop = shopQuery(player, q)
+	if shop then
+		return shop
+	end
 	local me = mg:playerByClientID(clientIDOf(player))
 	if me == nil or type(q) ~= "table" or not isInt(q.tile) or not mg:isValidRef(q.tile) then
+		return nil
+	end
+	-- The build ghost queries ~8/s while hovering; allow bursts, cap abuse.
+	if not allow(player, "query", 15, 30) then
 		return nil
 	end
 	local list = {}
@@ -461,7 +744,8 @@ Net.Query.OnServerInvoke = function(player: Player, q)
 		end
 	end
 	local out = {}
-	for _, bu in me:buildableUnits(q.tile, list) do
+	local railsFor = if type(q.ghost) == "string" and table.find(BUILDABLE, q.ghost) then q.ghost else false
+	for _, bu in me:buildableUnits(q.tile, list, railsFor) do
 		local upgradeTile = nil
 		if bu.canUpgrade ~= false then
 			local target = mg:unit(bu.canUpgrade)
@@ -474,11 +758,27 @@ Net.Query.OnServerInvoke = function(player: Player, q)
 			canUpgrade = bu.canUpgrade ~= false,
 			upgradeCosts = if bu.upgradeCosts then table.move(bu.upgradeCosts, 1, 5, 1, {}) else nil, -- x1 and x5 only
 			upgradeTile = upgradeTile,
+			-- Build ghost only (q.ghost = the selected unit): rail preview.
+			ghostRailPaths = if q.ghost == bu.type and bu.ghostRailPaths and #bu.ghostRailPaths > 0 then bu.ghostRailPaths else nil,
+			overlappingRailroads = if q.ghost == bu.type and bu.overlappingRailroads and #bu.overlappingRailroads > 0 then bu.overlappingRailroads else nil,
 		})
 	end
 	local del = deletableAt(me, q.tile)
 	local spawnPhase = mg:inSpawnPhase()
+	local interaction = nil
+	local ownerID = mg:ownerID(q.tile)
+	local other = if ownerID ~= 0 then mg:playerBySmallID(ownerID) else nil
+	if other then
+		interaction = interactionFor(me, other)
+	end
+	if q.kind == "player" then
+		return playerPanelData(me, other, interaction)
+	end
 	return {
+		interaction = interaction,
+		ownerIsTraitor = other ~= nil and other:isTraitor(),
+		canSendEmojiAllPlayers = me:canSendEmoji(GameTypes.AllPlayers),
+		canEmbargoAll = me:canEmbargoAll(),
 		units = out,
 		deleteUnit = if del then del:type() else nil,
 		-- Radial menu (RadialMenuElements): centre attack, boat slot, owner.
@@ -507,6 +807,13 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 		return
 	end
 	intentCount[clientID] = n
+	-- Death diagnostics: the last few intents of each human.
+	local log = recentIntents[clientID] or {}
+	recentIntents[clientID] = log
+	table.insert(log, string.format("t%d %s tile=%s target=%s ratio=%s", mg:ticks(), tostring(intent.type), tostring(intent.tile), tostring(intent.target or intent.targetSmallID), tostring(intent.ratio)))
+	if #log > 12 then
+		table.remove(log, 1)
+	end
 
 	local t = intent.type
 	if t == "spawn" then
@@ -578,13 +885,13 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 		if not table.find(BUILDABLE, unitType) or mg:config():isUnitDisabled(unitType) then
 			return
 		end
-		local bu = me:buildableUnits(tile, { unitType })[1]
+		local bu = me:buildableUnits(tile, { unitType }, false)[1]
 		if bu.canUpgrade ~= false then
 			local amount = if intent.amount == 5 then 5 else 1 -- uiState.upgradeMultiplier
 			table.insert(pending, { type = "upgrade_structure", clientID = clientID, unitId = bu.canUpgrade, amount = amount })
 		elseif bu.canBuild ~= false then
 			local amount = if unitType == "Atom Bomb" and intent.amount == 5 then 5 else nil
-			table.insert(pending, { type = "build_unit", clientID = clientID, unit = unitType, tile = tile, amount = amount })
+			table.insert(pending, { type = "build_unit", clientID = clientID, unit = unitType, tile = tile, amount = amount, rocketDirectionUp = intent.rocketDirectionUp ~= false })
 		end
 	elseif t == "move_warship" then
 		-- Warship selection: move own warships' patrol point (MoveWarshipExecution
@@ -594,7 +901,8 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 			return
 		end
 		local clean = {}
-		for _, id in ids do
+		for i = 1, math.min(#ids, 100) do
+			local id = ids[i]
 			if isInt(id) then
 				table.insert(clean, id)
 			end
@@ -610,6 +918,50 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 	elseif t == "cancel_boat" then
 		if isInt(intent.unitID) then
 			table.insert(pending, { type = "cancel_boat", clientID = clientID, unitID = intent.unitID })
+		end
+	else
+		-- Diplomacy (PlayerPanel / radial / events). Players are addressed by
+		-- smallID; the executions validate everything else.
+		local function pid(smallID)
+			if not isInt(smallID) or smallID <= 0 then
+				return nil
+			end
+			local p = mg:playerBySmallID(smallID)
+			return if p and p:isPlayer() and p ~= me then p:id() else nil
+		end
+		local target = pid(intent.target)
+		if t == "alliance_request" and target then
+			table.insert(pending, { type = "allianceRequest", clientID = clientID, recipient = target })
+		elseif t == "alliance_reject" and target then
+			table.insert(pending, { type = "allianceReject", clientID = clientID, requestor = target })
+		elseif t == "break_alliance" and target then
+			table.insert(pending, { type = "breakAlliance", clientID = clientID, recipient = target })
+		elseif t == "alliance_extend" and target then
+			table.insert(pending, { type = "allianceExtension", clientID = clientID, recipient = target })
+		elseif t == "target_player" and target then
+			table.insert(pending, { type = "targetPlayer", clientID = clientID, target = target })
+		elseif t == "emoji" and isInt(intent.emoji) and intent.emoji >= 0 then
+			local recipient = if intent.target == 0 then GameTypes.AllPlayers else target
+			if recipient then
+				table.insert(pending, { type = "emoji", clientID = clientID, recipient = recipient, emoji = intent.emoji })
+			end
+		elseif (t == "donate_troops" or t == "donate_gold") and target then
+			local amount = intent.amount
+			if type(amount) == "number" and amount == amount and amount > 0 and amount < 1e15 then
+				amount = math.floor(amount)
+				if t == "donate_troops" then
+					table.insert(pending, { type = "donate_troops", clientID = clientID, recipient = target, troops = amount })
+				else
+					table.insert(pending, { type = "donate_gold", clientID = clientID, recipient = target, gold = amount })
+				end
+			end
+		elseif t == "embargo" and target and (intent.action == "start" or intent.action == "stop") then
+			table.insert(pending, { type = "embargo", clientID = clientID, targetID = target, action = intent.action })
+		elseif t == "embargo_all" and (intent.action == "start" or intent.action == "stop") then
+			table.insert(pending, { type = "embargo_all", clientID = clientID, action = intent.action })
+		elseif t == "quick_chat" and target and type(intent.key) == "string" and #intent.key <= 64 then
+			local chatTarget = pid(intent.chatTarget)
+			table.insert(pending, { type = "quick_chat", clientID = clientID, recipient = target, quickChatKey = intent.key, target = chatTarget })
 		end
 	end
 end)
@@ -669,6 +1021,50 @@ local function meInfo(me, withBorders: boolean)
 		incoming = attackRows(me:incomingAttacks(), true),
 		outgoing = attackRows(me:outgoingAttacks(), false),
 		spawnTile = me:spawnTile(),
+		-- ActionableEvents / PlayerPanel: our alliances and who still asks us.
+		alliances = (function()
+			local rows = {}
+			for _, a in me:alliances() do
+				local other = a:other(me)
+				local info = me:allianceInfo(other)
+				table.insert(rows, {
+					id = a:id(),
+					other = other:smallID(),
+					expiresAt = a:expiresAt(),
+					inExtensionWindow = info and info.inExtensionWindow,
+					canExtend = info and info.canExtend,
+				})
+			end
+			return rows
+		end)(),
+		requestsIn = (function()
+			local ids = {}
+			for _, r in me:incomingAllianceRequests() do
+				table.insert(ids, r:requestor():smallID())
+			end
+			return ids
+		end)(),
+		extensionPromptOffset = config:allianceExtensionPromptOffset(),
+		traitorTicks = if me:isTraitor() then me:getTraitorRemainingTicks() else 0,
+		-- Name icons from our point of view: transitive targets and embargoes
+		-- in either direction (PlayerView.hasEmbargo).
+		targets = (function()
+			local ids = {}
+			for _, t in me:transitiveTargets() do
+				table.insert(ids, t:smallID())
+			end
+			return ids
+		end)(),
+		embargoes = (function()
+			local ids = {}
+			for _, p in mg:players() do
+				if p ~= me and (me:hasEmbargoAgainst(p) or p:hasEmbargoAgainst(me)) then
+					table.insert(ids, p:smallID())
+				end
+			end
+			return ids
+		end)(),
+		tick = mg:ticks(),
 	}
 	if withBorders then
 		local myID = me:smallID()
@@ -705,6 +1101,11 @@ local function playerForSmallID(smallID: number): Player?
 	return nil
 end
 
+local function playerNameBySmallID(smallID: number): string
+	local p = mg:playerBySmallID(smallID)
+	return if p and p:isPlayer() then p:displayName() else ""
+end
+
 local function sendMessage(playerSmallID: number?, evt)
 	if playerSmallID == nil then
 		Net.Event:FireAllClients(evt)
@@ -738,10 +1139,14 @@ local unitChanges, unitOrder = {}, {}
 -- Units flying on a motion plan (nukes): sent once with the plan, then only
 -- when they end; clients replay the path themselves.
 local planSent = {}
+-- Rail changes this tick (see railroads).
+local railAdds, railRemoves = {}, {}
 
 local function handleUpdates(updates)
 	table.clear(unitChanges)
 	table.clear(unitOrder)
+	table.clear(railAdds)
+	table.clear(railRemoves)
 	for _, u in updates do
 		if u.type == "Unit" then
 			local plan = mg:motionPlan(u.id)
@@ -775,8 +1180,30 @@ local function handleUpdates(updates)
 				targetable = u.targetable,
 				targetUnitId = u.targetUnitId,
 				warshipRetreating = u.warshipRetreating,
+				trainType = u.trainType,
+				loaded = u.loaded,
+				missileTimers = u.missileTimers,
+				reloadTicks = u.reloadTicks,
 				plan = if u.isActive then plan else nil,
 			}
+		end
+		if u.type == "RailroadConstructionEvent" then
+			railroads[u.id] = u.tiles
+			table.insert(railAdds, { id = u.id, tiles = u.tiles })
+		elseif u.type == "RailroadDestructionEvent" then
+			if railroads[u.id] then
+				railroads[u.id] = nil
+				table.insert(railRemoves, u.id)
+			end
+		elseif u.type == "RailroadSnapEvent" then
+			if railroads[u.originalId] then
+				railroads[u.originalId] = nil
+				table.insert(railRemoves, u.originalId)
+			end
+			railroads[u.newId1] = u.tiles1
+			railroads[u.newId2] = u.tiles2
+			table.insert(railAdds, { id = u.newId1, tiles = u.tiles1 })
+			table.insert(railAdds, { id = u.newId2, tiles = u.tiles2 })
 		end
 		if u.type == "SpawnPhaseEnd" then
 			Net.Event:FireAllClients({ type = "SpawnPhaseEnd", tick = u.startTick })
@@ -811,9 +1238,141 @@ local function handleUpdates(updates)
 				focusPlayerID = u.focusPlayerID,
 				unitID = u.unitID,
 			})
+		elseif u.type == "AllianceRequest" then
+			sendMessage(u.recipientID, { type = "AllianceRequest", requestor = u.requestorID, duration = mg:config():allianceRequestDuration() })
+		elseif u.type == "AllianceRequestReply" then
+			local r = u.request
+			sendMessage(r.requestorID, {
+				type = "Message",
+				message = "events_display.alliance_request_status",
+				params = { name = playerNameBySmallID(r.recipientID), status = if u.accepted then "accepted" else "rejected" },
+				messageType = if u.accepted then 13 else 14,
+				focusPlayerID = r.recipientID,
+			})
+			sendMessage(r.recipientID, { type = "AllianceRequestResolved", requestor = r.requestorID })
+		elseif u.type == "BrokeAlliance" then
+			local betrayed = mg:playerBySmallID(u.betrayedID)
+			local traitor = mg:playerBySmallID(u.traitorID)
+			sendMessage(u.traitorID, { type = "AllianceGone", allianceID = u.allianceID })
+			sendMessage(u.betrayedID, { type = "AllianceGone", allianceID = u.allianceID })
+			if betrayed and traitor and not betrayed:isDisconnected() then
+				if not betrayed:isTraitor() then
+					local config = mg:config()
+					local secs = math.floor(config:traitorDuration() * 0.1)
+					sendMessage(u.traitorID, {
+						type = "Message",
+						message = "events_display.betrayal_description",
+						params = {
+							name = betrayed:displayName(),
+							malusPercent = math.floor((1 - config:traitorDefenseDebuff()) * 100 + 0.5),
+							durationText = if secs == 1 then "1 second" else `{secs} seconds`,
+						},
+						messageType = 16,
+						focusPlayerID = u.betrayedID,
+					})
+				end
+				sendMessage(u.betrayedID, {
+					type = "Message",
+					message = "events_display.betrayed_you",
+					params = { name = traitor:displayName() },
+					messageType = 16,
+					focusPlayerID = u.traitorID,
+				})
+			end
+		elseif u.type == "AllianceExpired" then
+			local a, b = mg:playerBySmallID(u.player1ID), mg:playerBySmallID(u.player2ID)
+			if a and b and a:isAlive() and b:isAlive() then
+				for _, pair in { { u.player1ID, b }, { u.player2ID, a } } do
+					sendMessage(pair[1], {
+						type = "Message",
+						message = "events_display.alliance_expired",
+						params = { name = pair[2]:displayName() },
+						messageType = 17,
+						focusPlayerID = pair[2]:smallID(),
+					})
+				end
+			end
+		elseif u.type == "AllianceExtension" then
+			sendMessage(u.playerID, { type = "AllianceExtended", allianceID = u.allianceID })
+		elseif u.type == "DonateEvent" then
+			local sender, recipient = mg:player(u.senderId), mg:player(u.recipientId)
+			local isGold = u.donationType == "gold"
+			local amount = if isGold then Format.renderNumber(u.amount) else Format.renderTroops(u.amount)
+			sendMessage(recipient:smallID(), {
+				type = "Message",
+				message = if isGold then "events_display.received_gold_from_player" else "events_display.received_troops_from_player",
+				params = { name = sender:displayName(), gold = amount, troops = amount },
+				messageType = 19,
+				focusPlayerID = sender:smallID(),
+			})
+			sendMessage(sender:smallID(), {
+				type = "Message",
+				message = if isGold then "events_display.sent_gold_to_player" else "events_display.sent_troops_to_player",
+				params = { name = recipient:displayName(), gold = amount, troops = amount },
+				messageType = 18,
+				focusPlayerID = recipient:smallID(),
+			})
+		elseif u.type == "TargetPlayer" then
+			local targeter = mg:playerBySmallID(u.playerID)
+			local target = mg:playerBySmallID(u.targetID)
+			for _, p in mg:players() do
+				if p:type() == "HUMAN" and p:isFriendly(targeter) then
+					sendMessage(p:smallID(), {
+						type = "Message",
+						message = "events_display.attack_request",
+						params = { name = targeter:displayName(), target = target:displayName() },
+						messageType = 2,
+						focusPlayerID = u.targetID,
+						keepNames = true,
+					})
+				end
+			end
+			-- Target marker over the target's name for the targeter's friends.
+			Net.Event:FireAllClients({ type = "Target", player = u.playerID, target = u.targetID, tick = mg:ticks() })
+		elseif u.type == "Emoji" then
+			local e = u.emoji
+			local toAll = e.recipientID == GameTypes.AllPlayers
+			local sender = mg:playerBySmallID(e.senderID)
+			if not toAll then
+				sendMessage(e.recipientID, {
+					type = "Message",
+					message = `{sender:displayName()}: {e.message}`,
+					messageType = 20,
+					focusPlayerID = e.senderID,
+					raw = true,
+				})
+				local recipient = mg:playerBySmallID(e.recipientID)
+				sendMessage(e.senderID, {
+					type = "Message",
+					message = "events_display.sent_emoji",
+					params = { name = recipient:displayName(), emoji = e.message },
+					messageType = 20,
+					focusPlayerID = e.recipientID,
+				})
+			end
+			-- Emoji bubble over the sender's name (NameLayer), for its recipients.
+			Net.Event:FireAllClients({ type = "Emoji", sender = e.senderID, recipient = if toAll then 0 else e.recipientID, message = e.message, tick = e.createdAt })
+		elseif u.type == "DisplayChatEvent" then
+			if u.playerID ~= nil then
+				local other = mg:player(u.recipient)
+				local chatTarget = if u.target then mg:player(u.target) else nil
+				sendMessage(u.playerID, {
+					type = "Chat",
+					category = u.category,
+					key = u.key,
+					isFrom = u.isFrom,
+					other = other and other:displayName(),
+					otherSmallID = other and other:smallID(),
+					target = chatTarget and chatTarget:displayName(),
+				})
+			end
 		elseif u.type == "UnitIncoming" then
 			sendMessage(u.playerID, { type = "Incoming", unitID = u.unitID, message = u.message, messageType = u.messageType })
 		end
+	end
+	if #railAdds > 0 or #railRemoves > 0 then
+		-- Removals first: a snap removes the old id and adds two new ones.
+		Net.Event:FireAllClients({ type = "Rail", remove = railRemoves, add = railAdds })
 	end
 	if #unitOrder > 0 then
 		local list = table.create(#unitOrder)
@@ -832,15 +1391,26 @@ local function runTick()
 	local intents = pending
 	pending = {}
 	table.clear(intentCount)
+	-- Several clicks can land in one tick; upstream's client prices each one
+	-- against the troops left after the previous send, so do the same here
+	-- (otherwise five 20 % clicks would send the whole army).
+	local remaining = {}
 	for _, intent in intents do
 		if (intent.type == "attack" or intent.type == "boat") and intent.ratio then
 			local me = mg:playerByClientID(intent.clientID)
-			intent.troops = if me then me:troops() * intent.ratio else 0
+			if me then
+				local left = remaining[me] or me:troops()
+				intent.troops = left * intent.ratio
+				remaining[me] = left - intent.troops
+			else
+				intent.troops = 0
+			end
 		end
 	end
 
 	local wasInSpawnPhase = mg:inSpawnPhase()
 	local updates = runner:executeNextTick(intents)
+	checkHumanDeaths()
 	local tick = mg:ticks()
 
 	-- Roster before tiles, so clients know a new player's colour before
@@ -877,6 +1447,7 @@ local function runTick()
 
 	if tick % STATS_EVERY == 0 then
 		Net.Stats:FireAllClients(Net.packStats(tick, statsRows()))
+		broadcastFlags()
 		for _, plr in Players:GetPlayers() do
 			local me = mg:playerByClientID(clientIDOf(plr))
 			if me and me:isAlive() then
@@ -894,7 +1465,25 @@ local NEXT_MATCH_SECONDS = 20
 -- The match is over: tell clients, then restart this script for a new match
 -- (a fresh clone re-runs the lobby; the destroyed one takes its connections
 -- with it). TODO(port): lobby / matchmaking across servers.
+local function recordStats()
+	local winner = mg:getWinner()
+	local land = mg:numLandTiles()
+	for _, p in mg:allPlayers() do
+		local userId = p:type() == "HUMAN" and tonumber(p:clientID())
+		local data = userId and Profiles.get(userId)
+		if data then
+			data.stats.games += 1
+			if winner == p then
+				data.stats.wins += 1
+			end
+			data.stats.bestPct = math.max(data.stats.bestPct, math.floor(p:numTilesOwned() / math.max(1, land) * 1000) / 10)
+			Profiles.markDirty(userId)
+		end
+	end
+end
+
 local function endMatch()
+	recordStats()
 	Net.Event:FireAllClients({ type = "MatchEnding", seconds = NEXT_MATCH_SECONDS })
 	task.delay(NEXT_MATCH_SECONDS, function()
 		Net.Event:FireAllClients({ type = "MatchReset" })
@@ -916,7 +1505,15 @@ RunService.Heartbeat:Connect(function(dt)
 	while accumulator >= TICK_SECONDS and steps < 3 do
 		accumulator -= TICK_SECONDS
 		steps += 1
+		local t0 = os.clock()
 		running = runTick()
+		local ms = (os.clock() - t0) * 1000
+		tickPerf.n += 1
+		tickPerf.total += ms
+		tickPerf.max = math.max(tickPerf.max, ms)
+		if ms > 100 then
+			tickPerf.slow += 1
+		end
 		if not running then
 			endMatch()
 			break

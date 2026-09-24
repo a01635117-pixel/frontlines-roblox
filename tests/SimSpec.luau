@@ -139,6 +139,11 @@ function SimSpec.run(untilTick: number): string
 		s.runner:executeNextTick(s.intentsByTick[s.tick])
 		s.simSeconds += os.clock() - t0
 		s.tick += 1
+		-- Optional per-tick { hash, nextUnitID } to pin the first diverging tick.
+		local th = V.tickHashes and V.tickHashes[s.tick]
+		if th and s.firstTickMismatch == nil and (game:hash() ~= th[1] or game._nextUnitID ~= th[2]) then
+			s.firstTickMismatch = `tick {s.tick}: hash {game:hash()} != {th[1]}, nextUnitID {game._nextUnitID} != {th[2]}`
+		end
 	end
 
 	local lines = {}
@@ -180,6 +185,9 @@ function SimSpec.run(untilTick: number): string
 			tostring(s.firstFailure)
 		)
 	)
+	if s.firstTickMismatch then
+		table.insert(lines, `first per-tick mismatch: {s.firstTickMismatch}`)
+	end
 	return table.concat(lines, "\n")
 end
 
