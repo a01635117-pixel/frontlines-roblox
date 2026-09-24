@@ -522,7 +522,7 @@ end
 
 -- Batched move (Net.UnitPos, every `interval` seconds): glide there over
 -- that interval instead of one tick.
-function UnitLayer:movePos(id: number, pos: number, interval: number)
+function UnitLayer:movePos(id: number, pos: number)
 	local e = self.units[id]
 	if e == nil or e.isStructure or e.planned then
 		return
@@ -535,8 +535,12 @@ function UnitLayer:movePos(id: number, pos: number, interval: number)
 		local fy = map:y(e.from) + (map:y(e.to) - map:y(e.from)) * a
 		e.from = map:ref(math.floor(fx + 0.5), math.floor(fy + 0.5))
 		e.to = pos
-		e.t0 = os.clock()
-		e.dur = interval
+		-- Glide over the time since this unit's previous batch (0.2 s for
+		-- warships and boats, 0.4 s for trade ships and trains).
+		local now = os.clock()
+		e.dur = math.clamp(now - (e.lastBatch or now - 0.2), 0.1, 0.5)
+		e.lastBatch = now
+		e.t0 = now
 	end
 	e.pos = pos
 end

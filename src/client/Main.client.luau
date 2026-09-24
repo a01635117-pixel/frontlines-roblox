@@ -738,7 +738,7 @@ end)
 -- Plain moves arrive batched every 2 ticks (server POS_EVERY).
 Net.UnitPos.OnClientEvent:Connect(function(buf)
 	Net.unpackUnitPos(buf, function(id, pos)
-		unitLayer:movePos(id, pos, 0.2)
+		unitLayer:movePos(id, pos)
 	end)
 end)
 

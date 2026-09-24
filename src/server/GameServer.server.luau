@@ -526,6 +526,14 @@ local players = {}
 for _, p in Players:GetPlayers() do
 	table.insert(players, { username = p.DisplayName, clientID = clientIDOf(p), isLobbyCreator = p.UserId == lobby.hostUserId })
 end
+-- Studio load test (attribute FakeHumans = N): N scripted human players.
+local FAKE_HUMANS = if RunService:IsStudio() then script:GetAttribute("FakeHumans") or 0 else 0
+local LoadTest = if FAKE_HUMANS > 0 then require(script.Parent.LoadTest) else nil
+if LoadTest then
+	for _, fake in LoadTest.players(FAKE_HUMANS) do
+		table.insert(players, fake)
+	end
+end
 
 local disabledUnits = table.clone(st.disabledUnits)
 for unit in FORCED_OFF do
@@ -1403,7 +1411,12 @@ local unitChanges, unitOrder = {}, {}
 -- the compact UnitPos stream instead (flushed every POS_EVERY ticks).
 local lastSentUnit: { [number]: any } = {}
 local posPending: { [number]: number } = {}
+local posPendingSlow: { [number]: number } = {}
 local POS_EVERY = 2
+-- Trade ships and trains (most moving units late in a match, and nobody
+-- steers them) are batched half as often.
+local POS_EVERY_SLOW = 4
+local SLOW_POS = { ["Trade Ship"] = true, Train = true }
 local COMPARE_FIELDS = { "unitType", "ownerID", "troops", "isActive", "isRetreating", "level", "underConstruction", "markedForDeletion", "reachedTarget", "targetTile", "health", "maxHealth", "targetable", "targetUnitId", "warshipRetreating", "trainType", "loaded", "reloadTicks", "buildStart", "buildTicks", "plan" }
 local function sameArray(a, b): boolean
 	if a == b then
@@ -1701,23 +1714,39 @@ local function handleUpdates(updates)
 		for _, id in unitOrder do
 			local c = unitChanges[id]
 			if onlyMoved(c, lastSentUnit[id]) then
-				posPending[id] = c.pos
+				if SLOW_POS[c.unitType] then
+					posPendingSlow[id] = c.pos
+				else
+					posPending[id] = c.pos
+				end
 				lastSentUnit[id].pos = c.pos
 			else
 				posPending[id] = nil
+				posPendingSlow[id] = nil
 				lastSentUnit[id] = if c.isActive then c else nil
 				table.insert(full, id)
 			end
 		end
 		unitOrder = full
 	end
-	if mg:ticks() % POS_EVERY == 0 and next(posPending) then
+	local flushFast = mg:ticks() % POS_EVERY == 0 and next(posPending) ~= nil
+	local flushSlow = mg:ticks() % POS_EVERY_SLOW == 0 and next(posPendingSlow) ~= nil
+	if flushFast or flushSlow then
 		local ids, positions = {}, {}
-		for id, pos in posPending do
-			table.insert(ids, id)
-			table.insert(positions, pos)
+		if flushFast then
+			for id, pos in posPending do
+				table.insert(ids, id)
+				table.insert(positions, pos)
+			end
+			table.clear(posPending)
 		end
-		table.clear(posPending)
+		if flushSlow then
+			for id, pos in posPendingSlow do
+				table.insert(ids, id)
+				table.insert(positions, pos)
+			end
+			table.clear(posPendingSlow)
+		end
 		Net.UnitPos:FireAllClients(Net.packUnitPos(ids, positions))
 	end
 	if #unitOrder > 0 then
@@ -1734,6 +1763,11 @@ local lastTile, order, states = {}, {}, {}
 
 local function runTick()
 	-- Resolve attack troops against current troop counts.
+	if LoadTest then
+		LoadTest.drive(mg, FAKE_HUMANS, function(it)
+			table.insert(pending, it)
+		end)
+	end
 	local intents = pending
 	pending = {}
 	table.clear(intentCount)

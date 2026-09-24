@@ -37,22 +37,31 @@ local NAMES = { "GameState", "Roster", "Tick", "Stats", "Names", "Units", "UnitP
 local FUNCTIONS = { "Query" }
 
 -- UnitPos: moves of units whose only change is their position (trade ships,
--- trains, boats, warships), batched a few times a second as u32 id + u32 tile.
--- Sending these as full Units tables was ~90 KB/s per player late in a match,
--- far over what Roblox delivers without queueing (the "lag as the game goes on").
+-- trains, boats, warships), batched a few times a second as u24 id + u24
+-- tile (6 bytes; ids and tiles stay below 16.7M). Sending these as full Units
+-- tables was ~90 KB/s per player late in a match, far over what Roblox
+-- delivers without queueing (the "lag as the game goes on").
+local function writeu24(b: buffer, o: number, v: number)
+	buffer.writeu16(b, o, v % 65536)
+	buffer.writeu8(b, o + 2, (v // 65536) % 256)
+end
+local function readu24(b: buffer, o: number): number
+	return buffer.readu16(b, o) + buffer.readu8(b, o + 2) * 65536
+end
+
 function Net.packUnitPos(ids: { number }, positions: { number }): buffer
 	local n = #ids
-	local b = buffer.create(n * 8)
+	local b = buffer.create(n * 6)
 	for i = 1, n do
-		buffer.writeu32(b, (i - 1) * 8, ids[i])
-		buffer.writeu32(b, (i - 1) * 8 + 4, positions[i])
+		writeu24(b, (i - 1) * 6, ids[i])
+		writeu24(b, (i - 1) * 6 + 3, positions[i])
 	end
 	return b
 end
 
 function Net.unpackUnitPos(b: buffer, fn: (number, number) -> ())
-	for o = 0, buffer.len(b) - 8, 8 do
-		fn(buffer.readu32(b, o), buffer.readu32(b, o + 4))
+	for o = 0, buffer.len(b) - 6, 6 do
+		fn(readu24(b, o), readu24(b, o + 3))
 	end
 end
 

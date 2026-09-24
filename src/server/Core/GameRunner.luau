@@ -193,7 +193,29 @@ function GameRunner:init()
 		end
 	end
 	if config:bots() > 0 then
-		game:addExecution(table.unpack(self.execManager:spawnTribes(config:bots())))
+		-- Roblox port: 250-400 tribe spawns in one tick took ~0.5 s (a visible
+		-- freeze at the start of every match); feed them in 10 per tick. The
+		-- spawn phase lasts 150-200 ticks, so all are placed within its first
+		-- few seconds.
+		local tribes = self.execManager:spawnTribes(config:bots())
+		local feeder = {
+			isActive = function(f)
+				return f.next <= #tribes
+			end,
+			activeDuringSpawnPhase = function()
+				return true
+			end,
+			init = function() end,
+			tick = function(f)
+				local last = math.min(#tribes, f.next + 9)
+				for i = f.next, last do
+					game:addExecution(tribes[i])
+				end
+				f.next = last + 1
+			end,
+			next = 1,
+		}
+		game:addExecution(feeder)
 	end
 	game:addExecution(SmallExecutions.WinCheckExecution.new())
 	if not config:isUnitDisabled(GameTypes.UnitType.Factory) then
