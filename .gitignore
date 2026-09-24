@@ -3,3 +3,4 @@ tools/node_modules/
 *.lock
 *.rbxlx.lock
 .DS_Store
+tools/soak/AutoPlay.rbxmx
