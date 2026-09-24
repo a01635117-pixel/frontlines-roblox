@@ -293,5 +293,14 @@
   "Owned": "Posiadane",
   "Trial: {hours} left": "Próba: zostało {hours}",
   "Featured": "Polecane",
-  "Play again": "Zagraj ponownie"
+  "Play again": "Zagraj ponownie",
+  "🏳 Surrender": "🏳 Poddaj się",
+  "Surrender": "Poddaj się",
+  "Surrender? Your land becomes neutral.": "Poddać się? Twoje ziemie staną się niczyje.",
+  "Rebirth ({count} left)": "Odrodzenie (zostało: {count})",
+  "Rebirth — R$ {price}": "Odrodzenie — R$ {price}",
+  "Music": "Muzyka",
+  "Effects": "Efekty",
+  "Mute all": "Wycisz wszystko",
+  "Unmute": "Włącz dźwięk"
 }

@@ -90,7 +90,8 @@ local function processReceipt(receipt)
 	local bundle = Shop.bundleByProduct[pid]
 	local isDeal = Shop.DAILY_DEAL.productId ~= 0 and pid == Shop.DAILY_DEAL.productId
 	local isAd = Shop.AD_REWARD.productId ~= 0 and pid == Shop.AD_REWARD.productId
-	if not (item or bundle or isDeal or isAd) then
+	local isRebirth = pid == Shop.REBIRTH.productId
+	if not (item or bundle or isDeal or isAd or isRebirth) then
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 	local data = Profiles.get(receipt.PlayerId, 15)
@@ -98,6 +99,20 @@ local function processReceipt(receipt)
 		return Enum.ProductPurchaseDecision.NotProcessedYet -- not loaded; Roblox retries
 	end
 	if Profiles.hasReceipt(data, receipt.PurchaseId) then
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+	if isRebirth then
+		data.rebirths = (data.rebirths or 0) + 1
+		Profiles.addReceipt(data, receipt.PurchaseId)
+		if not Profiles.saveNow(receipt.PlayerId) then
+			data.rebirths -= 1
+			table.remove(data.receipts, table.find(data.receipts, receipt.PurchaseId) :: number)
+			return Enum.ProductPurchaseDecision.NotProcessedYet
+		end
+		changed:Fire(receipt.PlayerId)
+		if ShopService.onRebirthBought then
+			task.defer(ShopService.onRebirthBought, receipt.PlayerId)
+		end
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
 	if item then
@@ -236,6 +251,23 @@ function ShopService.cosmetics(userId: number)
 	return out
 end
 
+-- Spend one banked rebirth; false when the player has none.
+function ShopService.useRebirth(userId: number): boolean
+	local data = Profiles.get(userId)
+	if data == nil or (data.rebirths or 0) <= 0 then
+		return false
+	end
+	data.rebirths -= 1
+	Profiles.markDirty(userId)
+	changed:Fire(userId)
+	return true
+end
+
+function ShopService.rebirths(userId: number): number
+	local data = Profiles.get(userId)
+	return if data then data.rebirths or 0 else 0
+end
+
 -- Shop screen state for a player.
 function ShopService.state(userId: number)
 	local data = Profiles.get(userId, 5)
@@ -259,6 +291,7 @@ function ShopService.state(userId: number)
 		supporter = ShopService.perks(userId).supporter,
 		daily = deal and deal.id,
 		dailySecondsLeft = 86400 - os.time() % 86400,
+		rebirths = if data then data.rebirths or 0 else 0,
 		loaded = data ~= nil,
 	}
 end

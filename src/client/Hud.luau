@@ -204,8 +204,20 @@ function Hud.new(gui: ScreenGui)
 			self.modalAction2()
 		end
 	end)
+	-- Optional third action (Rebirth on the death screen), gold.
+	local modalButton3 = modalButton:Clone()
+	modalButton3.Name = "Button3"
+	modalButton3.BackgroundColor3 = Color3.fromRGB(202, 138, 4)
+	modalButton3.LayoutOrder = 1
+	modalButton3.Visible = false
+	modalButton3.Parent = modal
+	modalButton3.Activated:Connect(function()
+		if self.modalAction3 then
+			self.modalAction3()
+		end
+	end)
 	modal.Visible = false
-	self.modal, self.modalTitle, self.modalButton, self.modalButton2 = modal, modalTitle, modalButton, modalButton2
+	self.modal, self.modalTitle, self.modalButton, self.modalButton2, self.modalButton3 = modal, modalTitle, modalButton, modalButton2, modalButton3
 	self:_paintBoard()
 
 	return self
@@ -255,7 +267,10 @@ end
 -- "You died" + "Spectate", "You Won!" / "X has won!" + "OK"; no "Keep Playing"
 -- on Roblox servers, a new match follows).
 -- secondText / secondAction: optional second button (matchmaking).
-function Hud:showModal(title: string, buttonText: string, isWin: boolean?, secondText: string?, secondAction: (() -> ())?)
+function Hud:showModal(title: string, buttonText: string, isWin: boolean?, secondText: string?, secondAction: (() -> ())?, thirdText: string?, thirdAction: (() -> ())?)
+	self.modalButton3.Visible = thirdText ~= nil
+	self.modalButton3.Text = thirdText or ""
+	self.modalAction3 = thirdAction
 	self.modalButton2.Visible = secondText ~= nil
 	self.modalButton2.Text = secondText or ""
 	self.modalAction2 = secondAction

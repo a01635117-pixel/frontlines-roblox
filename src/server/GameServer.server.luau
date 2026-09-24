@@ -18,6 +18,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
+local Shop = require(Shared:WaitForChild("Data"):WaitForChild("Shop"))
 local Net = require(Shared.Net)
 local GameRunner = require(script.Parent.Core.GameRunner)
 local GameTypes = require(script.Parent.Core.GameTypes)
@@ -162,7 +163,23 @@ local lobby = {
 	-- the most voted wins, the rotation pick stands when nobody votes.
 	votes = { map = {}, mode = {} },
 	defaults = { map = "World", mode = "ffa" :: any },
+	-- Singleplayer "Play again": restart on this server (no teleport).
+	soloReset = false,
 }
+-- Settings carried over a singleplayer restart (see soloReset).
+do
+	local saved = script:GetAttribute("Settings")
+	if type(saved) == "string" then
+		local ok, decoded = pcall(HttpService.JSONDecode, HttpService, saved)
+		if ok and type(decoded) == "table" then
+			for k, v in decoded do
+				if lobby.settings[k] ~= nil then
+					lobby.settings[k] = v
+				end
+			end
+		end
+	end
+end
 
 -- Public lobbies rotate maps by their playlist frequency (MapCatalog).
 local function rotationMap(): string
@@ -344,7 +361,13 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 	elseif intent.type == "create_private" then
 		Matchmaking.createPrivate(player)
 	elseif intent.type == "play_solo" then
-		Matchmaking.createSolo(player)
+		if lobby.mode == "solo" and lobby.started then
+			-- Already on our own server: a fresh match right here is much faster
+			-- than reserving and teleporting to a new one.
+			lobby.soloReset = true
+		else
+			Matchmaking.createSolo(player)
+		end
 	elseif intent.type == "join_code" and type(intent.code) == "string" and #intent.code <= 12 then
 		local ok = Matchmaking.joinByCode(player, intent.code)
 		if not ok then
@@ -502,9 +525,10 @@ local runner = GameRunner.create({
 		difficulty = st.difficulty,
 		donateGold = false,
 		donateTroops = false,
-		-- Solo in Studio behaves like upstream Singleplayer: no spawn timer, the
-		-- spawn phase ends when the player picks a location.
-		gameType = if RunService:IsStudio() and #players == 1 then "Singleplayer" else "Public",
+		-- Singleplayer servers (and solo Studio tests) are upstream Singleplayer:
+		-- no 20 s spawn timer, the game starts as soon as the player picks a
+		-- location.
+		gameType = if lobby.mode == "solo" or (RunService:IsStudio() and #players == 1) then "Singleplayer" else "Public",
 		-- Win only at 95 % land with nobody else able to afford a MIRV; no
 		-- timers, no "keep playing" (WinCheck:_hasWonRoblox).
 		robloxWinRule = true,
@@ -607,6 +631,18 @@ end
 -- snap events (upstream RailroadCache) for late joiners.
 local railroads = {}
 
+-- Construction progress (BarPass: constructionStartTick = the tick the unit
+-- was first seen under construction, duration from unitInfo).
+local buildStart: { [number]: number } = {}
+local function buildInfo(up)
+	if not up.underConstruction then
+		buildStart[up.id] = nil
+		return nil, nil
+	end
+	buildStart[up.id] = buildStart[up.id] or mg:ticks()
+	return buildStart[up.id], mg:config():unitInfo(up.unitType).constructionDuration or 50
+end
+
 local function fullState(forPlayer: Player)
 	local roster = {}
 	for _, p in mg:allPlayers() do
@@ -630,6 +666,10 @@ local function fullState(forPlayer: Player)
 		alliancesDisabled = mg:config():disableAlliances(),
 		yourClientID = clientIDOf(forPlayer),
 		tutorialDismissed = loadSettings(forPlayer).tutorialDismissed == true,
+		audio = loadSettings(forPlayer).audio,
+		rebirths = ShopService.rebirths(forPlayer.UserId),
+		rebirthPrice = Shop.REBIRTH.price,
+		rebirthProduct = Shop.REBIRTH.productId,
 		disabledUnits = (function()
 			local d = {}
 			for _, u in BUILDABLE do
@@ -651,7 +691,8 @@ local function fullState(forPlayer: Player)
 			local list = {}
 			for _, u in mg:units() do
 				local up = u:toUpdate()
-				table.insert(list, { id = up.id, unitType = up.unitType, ownerID = up.ownerID, pos = up.pos, troops = up.troops, isActive = true, isRetreating = up.isRetreating, level = up.level, underConstruction = up.underConstruction, markedForDeletion = up.markedForDeletion ~= false, targetTile = up.targetTile, plan = mg:motionPlan(up.id), health = up.health, maxHealth = up.maxHealth, targetable = up.targetable, targetUnitId = up.targetUnitId, warshipRetreating = up.warshipRetreating, trainType = up.trainType, loaded = up.loaded, missileTimers = up.missileTimers, reloadTicks = up.reloadTicks })
+				local bStart, bTicks = buildInfo(up)
+				table.insert(list, { buildStart = bStart, buildTicks = bTicks, id = up.id, unitType = up.unitType, ownerID = up.ownerID, pos = up.pos, troops = up.troops, isActive = true, isRetreating = up.isRetreating, level = up.level, underConstruction = up.underConstruction, markedForDeletion = up.markedForDeletion ~= false, targetTile = up.targetTile, plan = mg:motionPlan(up.id), health = up.health, maxHealth = up.maxHealth, targetable = up.targetable, targetUnitId = up.targetUnitId, warshipRetreating = up.warshipRetreating, trainType = up.trainType, loaded = up.loaded, missileTimers = up.missileTimers, reloadTicks = up.reloadTicks })
 			end
 			return list
 		end)(),
@@ -813,13 +854,30 @@ end
 -- living human, the attacks against it on the previous tick.
 recentIntents = {} :: { [string]: { string } }
 local lastThreats = {}
+-- Rebirth snapshot: each human's biggest territory this match (tile list),
+-- refreshed when it grows by 3 %.
+local peaks: { [string]: { n: number, tiles: { number }, troops: number } } = {}
+local requestRebirth, applyRebirth
+
 local function checkHumanDeaths()
+	-- The threat snapshot (for the death log) is rebuilt every 10 ticks, not
+	-- every tick: formatting every incoming attack of every human 10 times a
+	-- second was measurable work on a full server.
+	local sample = mg:ticks() % 10 == 0
 	for _, p in mg:players() do
 		if p:type() ~= "HUMAN" then
 			continue
 		end
 		local clientID = p:clientID()
+		if p:numTilesOwned() > 0 and lastThreats[clientID] and not sample then
+			continue
+		end
 		if p:numTilesOwned() > 0 then
+			local n = p:numTilesOwned()
+			local pk = peaks[clientID]
+			if pk == nil or n > pk.n * 1.03 + 10 then
+				peaks[clientID] = { n = n, tiles = p:tiles():toArray(), troops = p:troops() }
+			end
 			local rows = {}
 			for _, a in p:incomingAttacks() do
 				table.insert(rows, string.format("%s(%s) %d troops", a:attacker():name(), a:attacker():type(), math.floor(a:troops())))
@@ -911,6 +969,52 @@ Net.Query.OnServerInvoke = function(player: Player, q)
 	}
 end
 
+-- Rebirth: a dead human spends a banked rebirth (bought for Robux) to get
+-- back the biggest territory they had this match.
+local PlayerExecution = require(script.Parent.Core.Execution.PlayerExecution)
+function requestRebirth(player: Player, me): boolean
+	local clientID = clientIDOf(player)
+	if mg:inSpawnPhase() or me:isAlive() or peaks[clientID] == nil or mg:getWinner() ~= nil then
+		return false
+	end
+	if not ShopService.useRebirth(player.UserId) then
+		return false
+	end
+	table.insert(pending, { type = "rebirth", clientID = clientID })
+	return true
+end
+function applyRebirth(p)
+	local pk = peaks[p:clientID()]
+	if pk == nil or p:isAlive() then
+		return
+	end
+	for _, tile in pk.tiles do
+		if mg:isLand(tile) and not mg:isImpassable(tile) and mg:owner(tile) ~= p then
+			mg:conquer(p, tile)
+		end
+	end
+	if not p:isAlive() then
+		return
+	end
+	p:setTroops(math.max(p:troops(), pk.troops))
+	-- PlayerExecution stopped when they died; start a fresh one.
+	mg:addExecution(PlayerExecution.new(p))
+	lastThreats[p:clientID()] = nil
+	for _, pl in Players:GetPlayers() do
+		if clientIDOf(pl) == p:clientID() then
+			Net.Event:FireClient(pl, { type = "Reborn" })
+		end
+	end
+end
+-- A rebirth bought from the death screen is used straight away.
+ShopService.onRebirthBought = function(userId: number)
+	local player = Players:GetPlayerByUserId(userId)
+	local me = player and mg:playerByClientID(clientIDOf(player))
+	if me then
+		requestRebirth(player, me)
+	end
+end
+
 Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 	if type(intent) ~= "table" then
 		return
@@ -918,6 +1022,13 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 	local clientID = clientIDOf(player)
 	if intent.type == "tutorial_dismiss" then
 		saveSetting(player, "tutorialDismissed", true)
+		return
+	elseif intent.type == "audio_settings" then
+		-- Music / effects volume (0..1), kept across servers.
+		local m, e = intent.music, intent.effects
+		if type(m) == "number" and type(e) == "number" and m == m and e == e and allow(player, "audio", 2, 5) then
+			saveSetting(player, "audio", { music = math.clamp(m, 0, 1), effects = math.clamp(e, 0, 1) })
+		end
 		return
 	end
 	local me = mg:playerByClientID(clientID)
@@ -938,6 +1049,15 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 	end
 
 	local t = intent.type
+	if t == "surrender" then
+		if not mg:inSpawnPhase() and me:isAlive() then
+			table.insert(pending, { type = "surrender", clientID = clientID })
+		end
+		return
+	elseif t == "rebirth" then
+		requestRebirth(player, me)
+		return
+	end
 	if t == "spawn" then
 		if isInt(intent.tile) and mg:isValidRef(intent.tile) then
 			table.insert(pending, { type = "spawn", clientID = clientID, tile = intent.tile })
@@ -1258,6 +1378,37 @@ end
 
 -- Latest state per unit this tick, sent as one Units message.
 local unitChanges, unitOrder = {}, {}
+-- Last full state sent per unit; a change that only moves the unit goes to
+-- the compact UnitPos stream instead (flushed every POS_EVERY ticks).
+local lastSentUnit: { [number]: any } = {}
+local posPending: { [number]: number } = {}
+local POS_EVERY = 2
+local COMPARE_FIELDS = { "unitType", "ownerID", "troops", "isActive", "isRetreating", "level", "underConstruction", "markedForDeletion", "reachedTarget", "targetTile", "health", "maxHealth", "targetable", "targetUnitId", "warshipRetreating", "trainType", "loaded", "reloadTicks", "buildStart", "buildTicks", "plan" }
+local function sameArray(a, b): boolean
+	if a == b then
+		return true
+	end
+	if type(a) ~= "table" or type(b) ~= "table" or #a ~= #b then
+		return false
+	end
+	for i = 1, #a do
+		if a[i] ~= b[i] then
+			return false
+		end
+	end
+	return true
+end
+local function onlyMoved(c, prev): boolean
+	if prev == nil or c.plan ~= nil then
+		return false
+	end
+	for _, k in COMPARE_FIELDS do
+		if c[k] ~= prev[k] then
+			return false
+		end
+	end
+	return sameArray(c.missileTimers, prev.missileTimers)
+end
 -- Units flying on a motion plan (nukes): sent once with the plan, then only
 -- when they end; clients replay the path themselves.
 local planSent = {}
@@ -1284,7 +1435,13 @@ local function handleUpdates(updates)
 			if unitChanges[u.id] == nil then
 				table.insert(unitOrder, u.id)
 			end
+			local bStart, bTicks = buildInfo(u)
+			if not u.isActive then
+				buildStart[u.id] = nil
+			end
 			unitChanges[u.id] = {
+				buildStart = bStart,
+				buildTicks = bTicks,
 				id = u.id,
 				unitType = u.unitType,
 				ownerID = u.ownerID,
@@ -1497,6 +1654,31 @@ local function handleUpdates(updates)
 		Net.Event:FireAllClients({ type = "Rail", remove = railRemoves, add = railAdds })
 	end
 	if #unitOrder > 0 then
+		-- Split: full states for anything but a plain move.
+		local full = table.create(#unitOrder)
+		for _, id in unitOrder do
+			local c = unitChanges[id]
+			if onlyMoved(c, lastSentUnit[id]) then
+				posPending[id] = c.pos
+				lastSentUnit[id].pos = c.pos
+			else
+				posPending[id] = nil
+				lastSentUnit[id] = if c.isActive then c else nil
+				table.insert(full, id)
+			end
+		end
+		unitOrder = full
+	end
+	if mg:ticks() % POS_EVERY == 0 and next(posPending) then
+		local ids, positions = {}, {}
+		for id, pos in posPending do
+			table.insert(ids, id)
+			table.insert(positions, pos)
+		end
+		table.clear(posPending)
+		Net.UnitPos:FireAllClients(Net.packUnitPos(ids, positions))
+	end
+	if #unitOrder > 0 then
 		local list = table.create(#unitOrder)
 		for i, id in unitOrder do
 			list[i] = unitChanges[id]
@@ -1513,6 +1695,24 @@ local function runTick()
 	local intents = pending
 	pending = {}
 	table.clear(intentCount)
+	-- Surrender / Rebirth are not upstream intents: applied here, between ticks.
+	for i = #intents, 1, -1 do
+		local it = intents[i]
+		if it.type == "surrender" or it.type == "rebirth" then
+			table.remove(intents, i)
+			local p = mg:playerByClientID(it.clientID)
+			if p and it.type == "surrender" and p:isAlive() then
+				-- Give up: the land goes neutral; PlayerExecution then handles
+				-- the death (units, alliances) like any other.
+				for _, tile in p:tiles():toArray() do
+					mg:relinquish(tile)
+				end
+				p:setTroops(0)
+			elseif p and it.type == "rebirth" then
+				applyRebirth(p)
+			end
+		end
+	end
 	-- Several clicks can land in one tick; upstream's client prices each one
 	-- against the troops left after the previous send, so do the same here
 	-- (otherwise five 20 % clicks would send the whole army).
@@ -1617,7 +1817,18 @@ end
 
 local accumulator = 0
 local running = true
+local perfWindow = { n = 0, total = 0, max = 0, slow = 0, t = os.clock() }
 RunService.Heartbeat:Connect(function(dt)
+	if lobby.soloReset and script.Parent then
+		lobby.soloReset = false
+		running = false
+		Net.Event:FireAllClients({ type = "MatchReset" })
+		local fresh = script:Clone()
+		fresh:SetAttribute("Settings", HttpService:JSONEncode(lobby.settings))
+		fresh.Parent = script.Parent
+		script:Destroy()
+		return
+	end
 	if not running then
 		return
 	end
@@ -1635,6 +1846,18 @@ RunService.Heartbeat:Connect(function(dt)
 		tickPerf.max = math.max(tickPerf.max, ms)
 		if ms > 100 then
 			tickPerf.slow += 1
+		end
+		-- Once a minute: tick cost summary in the server log (F9 console on live
+		-- servers), for diagnosing lag reports.
+		perfWindow.n += 1
+		perfWindow.total += ms
+		perfWindow.max = math.max(perfWindow.max, ms)
+		if ms > 100 then
+			perfWindow.slow += 1
+		end
+		if os.clock() - perfWindow.t >= 60 then
+			print(string.format("[Perf] tick %d: avg %.1f ms, max %.0f ms, %d/%d ticks over 100 ms, %d units, %d humans, Lua %d MB", mg:ticks(), perfWindow.total / perfWindow.n, perfWindow.max, perfWindow.slow, perfWindow.n, #mg:units(), #Players:GetPlayers(), collectgarbage("count") // 1024))
+			perfWindow.n, perfWindow.total, perfWindow.max, perfWindow.slow, perfWindow.t = 0, 0, 0, 0, os.clock()
 		end
 		if not running then
 			endMatch()

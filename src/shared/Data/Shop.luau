@@ -30,6 +30,9 @@ Shop.SUBSCRIPTION_PRICE = "R$ 399"
 Shop.DAILY_DEAL = { productId = 3714542965, price = 39 } -- today's featured item, cheaper
 Shop.AD_REWARD = { productId = 3714542970, price = 25 } -- 24 h trial of a random cosmetic
 Shop.TRIAL_SECONDS = 24 * 3600
+-- Rebirth: after dying, come back with the biggest territory you had this match.
+-- Bought rebirths are banked in the profile until used.
+Shop.REBIRTH = { productId = 3714569822, price = 49 }
 
 -- Items ------------------------------------------------------------------------------
 

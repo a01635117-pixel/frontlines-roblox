@@ -32,9 +32,29 @@ local EncodingService = game:GetService("EncodingService")
 
 local Net = {}
 
-local NAMES = { "GameState", "Roster", "Tick", "Stats", "Names", "Units", "Me", "Event", "Lobby", "Intent" }
+local NAMES = { "GameState", "Roster", "Tick", "Stats", "Names", "Units", "UnitPos", "Me", "Event", "Lobby", "Intent" }
 
 local FUNCTIONS = { "Query" }
+
+-- UnitPos: moves of units whose only change is their position (trade ships,
+-- trains, boats, warships), batched a few times a second as u32 id + u32 tile.
+-- Sending these as full Units tables was ~90 KB/s per player late in a match,
+-- far over what Roblox delivers without queueing (the "lag as the game goes on").
+function Net.packUnitPos(ids: { number }, positions: { number }): buffer
+	local n = #ids
+	local b = buffer.create(n * 8)
+	for i = 1, n do
+		buffer.writeu32(b, (i - 1) * 8, ids[i])
+		buffer.writeu32(b, (i - 1) * 8 + 4, positions[i])
+	end
+	return b
+end
+
+function Net.unpackUnitPos(b: buffer, fn: (number, number) -> ())
+	for o = 0, buffer.len(b) - 8, 8 do
+		fn(buffer.readu32(b, o), buffer.readu32(b, o + 4))
+	end
+end
 
 local folder: Folder
 if RunService:IsServer() then

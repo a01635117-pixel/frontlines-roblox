@@ -56,6 +56,8 @@ local TICK_SECONDS = 0.1
 local MIN_STRUCT, MAX_STRUCT = 9, 30 -- px, structures
 
 -- Structure icons (tools/pack-icons.mjs).
+local BUILD_BAR = Color3.fromRGB(90, 200, 110) -- construction progress
+local RELOAD_BAR = Color3.fromRGB(255, 196, 60) -- missile reload
 local STRUCTURE_ICON = {
 	City = "city",
 	Factory = "factory",
@@ -374,6 +376,7 @@ function UnitLayer:_applyStructure(e, u, icon: string)
 	e.missileTimers = u.missileTimers
 	e.reloadTicks = u.reloadTicks
 	e.underConstruction = u.underConstruction == true
+	e.buildStart, e.buildTicks = u.buildStart, u.buildTicks
 	local color = self.colors[u.ownerID] or Color3.new(1, 1, 1)
 	e.frame.BackgroundColor3 = color:Lerp(Color3.new(0, 0, 0), 0.25)
 	-- Structures being built are drawn faded until they finish.
@@ -471,6 +474,16 @@ end
 
 -- Oldest reloading missile's progress; icon dimmed while every missile reloads.
 function UnitLayer:_paintReload(e)
+	-- BarPass construction progress: the same bar under the icon, filling up
+	-- while the structure is built (every structure type, not just silos).
+	if e.underConstruction and e.buildStart and e.buildTicks and e.buildTicks > 0 then
+		local tick = if self.tickNow then self.tickNow() else 0
+		e.reload.Visible = true
+		e.reloadFill.Size = UDim2.fromScale(math.clamp((tick - e.buildStart) / e.buildTicks, 0, 1), 1)
+		e.reloadFill.BackgroundColor3 = BUILD_BAR
+		return
+	end
+	e.reloadFill.BackgroundColor3 = RELOAD_BAR
 	local timers = e.missileTimers
 	if timers == nil or e.reloadTicks == nil or e.underConstruction then
 		e.reload.Visible = false
@@ -504,6 +517,27 @@ function UnitLayer:_place(e)
 	e.levelLabel.TextSize = math.max(9, size * 0.5)
 end
 
+-- Batched move (Net.UnitPos, every `interval` seconds): glide there over
+-- that interval instead of one tick.
+function UnitLayer:movePos(id: number, pos: number, interval: number)
+	local e = self.units[id]
+	if e == nil or e.isStructure or e.planned then
+		return
+	end
+	if e.to ~= pos then
+		-- Start from where the sprite is drawn now, so a late batch never snaps back.
+		local map = self.map
+		local a = math.clamp((os.clock() - e.t0) / (e.dur or TICK_SECONDS), 0, 1)
+		local fx = map:x(e.from) + (map:x(e.to) - map:x(e.from)) * a
+		local fy = map:y(e.from) + (map:y(e.to) - map:y(e.from)) * a
+		e.from = map:ref(math.floor(fx + 0.5), math.floor(fy + 0.5))
+		e.to = pos
+		e.t0 = os.clock()
+		e.dur = interval
+	end
+	e.pos = pos
+end
+
 -- Per-frame: interpolate ship positions and scale everything with zoom.
 function UnitLayer:render()
 	local camera, map = self.camera, self.map
@@ -514,7 +548,7 @@ function UnitLayer:render()
 	for _, e in self.units do
 		if e.isStructure then
 			self:_place(e)
-			if e.missileTimers then
+			if e.missileTimers or e.underConstruction then
 				self:_paintReload(e)
 			end
 			continue
@@ -530,7 +564,7 @@ function UnitLayer:render()
 			x = map:x(pa) + (map:x(pb) - map:x(pa)) * frac
 			y = map:y(pa) + (map:y(pb) - map:y(pa)) * frac
 		else
-			local a = math.clamp((now - e.t0) / TICK_SECONDS, 0, 1)
+			local a = math.clamp((now - e.t0) / (e.dur or TICK_SECONDS), 0, 1)
 			x = map:x(e.from) + (map:x(e.to) - map:x(e.from)) * a
 			y = map:y(e.from) + (map:y(e.to) - map:y(e.from)) * a
 		end

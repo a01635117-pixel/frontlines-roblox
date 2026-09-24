@@ -34,6 +34,7 @@ local function defaultProfile()
 		settings = {},
 		receipts = {}, -- ordered list of granted PurchaseIds
 		trials = {}, -- itemId -> os.time() the free trial (rewarded ad) ends
+		rebirths = 0, -- banked Rebirth purchases
 	}
 end
 

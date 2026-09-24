@@ -64,12 +64,20 @@ musicGroup.Parent = SoundService
 local playing: { [string]: number } = {}
 local lastPlayed: { [string]: number } = {}
 local muted = false
+-- Player volume (0..1) per channel, saved in the profile ("audio" setting).
+local volume = { music = 1, effects = 1 }
+local onChange: ((music: number, effects: number) -> ())? = nil
+
+local function applyVolume()
+	group.Volume = if muted then 0 else EFFECT_VOLUME * volume.effects
+	musicGroup.Volume = if muted then 0 else MUSIC_VOLUME * volume.music
+end
 
 -- Plays a cue; `minGap` (seconds) drops repeats that come too quickly (the
 -- MIRV and nuke-warning intervals in SoundEffectController).
 function Audio.play(name: string, minGap: number?)
 	local id = EFFECTS[name]
-	if id == nil or muted then
+	if id == nil or muted or volume.effects <= 0 then
 		return
 	end
 	local now = os.clock()
@@ -127,36 +135,152 @@ end
 
 function Audio.setMuted(value: boolean)
 	muted = value
-	group.Volume = if value then 0 else EFFECT_VOLUME
-	musicGroup.Volume = if value then 0 else MUSIC_VOLUME
+	applyVolume()
 end
 
--- Speaker toggle button (top right, left of the leaderboard).
-function Audio.button(parent: Instance, topInset: number): TextButton
+-- Saved volumes from the profile ({ music, effects } or nil).
+function Audio.load(saved)
+	if type(saved) == "table" then
+		volume.music = math.clamp(tonumber(saved.music) or 1, 0, 1)
+		volume.effects = math.clamp(tonumber(saved.effects) or 1, 0, 1)
+		applyVolume()
+		if Audio.repaint then
+			Audio.repaint()
+		end
+	end
+end
+
+-- Called with (music, effects) whenever the player changes a volume.
+function Audio.onChange(fn)
+	onChange = fn
+end
+
+local function mkButton(parent: Instance, name: string, text: string, size: Vector2): TextButton
 	local b = Instance.new("TextButton")
-	b.Name = "AudioToggle"
-	b.AnchorPoint = Vector2.new(1, 0)
-	b.Position = UDim2.new(1, -12 - 260 - 8, 0, topInset)
-	b.Size = UDim2.fromOffset(40, 40)
+	b.Name = name
+	b.Size = UDim2.fromOffset(size.X, size.Y)
 	b.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
 	b.BackgroundTransparency = 0.25
 	b.AutoButtonColor = true
-	b.TextSize = 20
+	b.TextSize = 18
 	b.Font = Enum.Font.GothamBold
 	b.TextColor3 = Color3.new(1, 1, 1)
+	b.Text = text
 	b.ZIndex = 50
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, 8)
 	corner.Parent = b
-	local function paint()
-		b.Text = if muted then "🔇" else "🔊"
-	end
-	paint()
-	b.Activated:Connect(function()
-		Audio.setMuted(not muted)
-		paint()
-	end)
 	b.Parent = parent
+	return b
+end
+
+-- Speaker button left of the leaderboard (follows it as it opens / closes);
+-- it opens a small panel: music and effects volume in 10 % steps.
+function Audio.button(parent: Instance, board: GuiObject): TextButton
+	local b = mkButton(parent, "AudioToggle", "🔊", Vector2.new(40, 40))
+	b.AnchorPoint = Vector2.new(1, 0)
+	local panel = Instance.new("Frame")
+	panel.Name = "AudioPanel"
+	panel.AnchorPoint = Vector2.new(1, 0)
+	panel.Size = UDim2.fromOffset(230, 0)
+	panel.AutomaticSize = Enum.AutomaticSize.Y
+	panel.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
+	panel.BackgroundTransparency = 0.1
+	panel.Visible = false
+	panel.ZIndex = 50
+	local pc = Instance.new("UICorner")
+	pc.CornerRadius = UDim.new(0, 8)
+	pc.Parent = panel
+	local pad = Instance.new("UIPadding")
+	for _, k in { "PaddingTop", "PaddingBottom", "PaddingLeft", "PaddingRight" } do
+		pad[k] = UDim.new(0, 8)
+	end
+	pad.Parent = panel
+	local list = Instance.new("UIListLayout")
+	list.Padding = UDim.new(0, 6)
+	list.SortOrder = Enum.SortOrder.LayoutOrder
+	list.Parent = panel
+	panel.Parent = parent
+
+	local rows = {}
+	local function row(key: string, label: string, order: number)
+		local r = Instance.new("Frame")
+		r.Name = key
+		r.BackgroundTransparency = 1
+		r.Size = UDim2.new(1, 0, 0, 32)
+		r.LayoutOrder = order
+		r.ZIndex = 51
+		r.Parent = panel
+		local t = Instance.new("TextLabel")
+		t.BackgroundTransparency = 1
+		t.Size = UDim2.new(0, 80, 1, 0)
+		t.Font = Enum.Font.GothamMedium
+		t.TextSize = 15
+		t.TextColor3 = Color3.new(1, 1, 1)
+		t.TextXAlignment = Enum.TextXAlignment.Left
+		t.Text = label
+		t.ZIndex = 51
+		t.Parent = r
+		local minus = mkButton(r, "Minus", "−", Vector2.new(32, 32))
+		minus.Position = UDim2.fromOffset(84, 0)
+		local value = Instance.new("TextLabel")
+		value.BackgroundTransparency = 1
+		value.Position = UDim2.fromOffset(118, 0)
+		value.Size = UDim2.fromOffset(60, 32)
+		value.Font = Enum.Font.GothamBold
+		value.TextSize = 15
+		value.TextColor3 = Color3.new(1, 1, 1)
+		value.ZIndex = 51
+		value.Parent = r
+		local plus = mkButton(r, "Plus", "+", Vector2.new(32, 32))
+		plus.Position = UDim2.fromOffset(180, 0)
+		local function step(d: number)
+			volume[key] = math.clamp(math.round((volume[key] + d) * 10) / 10, 0, 1)
+			applyVolume()
+			Audio.repaint()
+			if onChange then
+				onChange(volume.music, volume.effects)
+			end
+		end
+		minus.Activated:Connect(function()
+			step(-0.1)
+		end)
+		plus.Activated:Connect(function()
+			step(0.1)
+		end)
+		rows[key] = value
+	end
+	row("music", "Music", 1)
+	row("effects", "Effects", 2)
+	local mute = mkButton(panel, "Mute", "", Vector2.new(214, 32))
+	mute.LayoutOrder = 3
+	mute.TextSize = 15
+	mute.Activated:Connect(function()
+		Audio.setMuted(not muted)
+		Audio.repaint()
+	end)
+
+	function Audio.repaint()
+		b.Text = if muted or (volume.music <= 0 and volume.effects <= 0) then "🔇" else "🔊"
+		rows.music.Text = tostring(math.round(volume.music * 100)) .. "%"
+		rows.effects.Text = tostring(math.round(volume.effects * 100)) .. "%"
+		mute.Text = if muted then "Unmute" else "Mute all"
+	end
+	Audio.repaint()
+	b.Activated:Connect(function()
+		panel.Visible = not panel.Visible
+	end)
+	local function follow()
+		-- Offsets relative to the parent (AbsolutePosition ignores IgnoreGuiInset).
+		local origin = (parent :: any).AbsolutePosition
+		local x = board.AbsolutePosition.X - origin.X - 8
+		local y = board.AbsolutePosition.Y - origin.Y
+		b.Position = UDim2.fromOffset(x, y)
+		panel.Position = UDim2.fromOffset(x, y + 46)
+	end
+	board:GetPropertyChangedSignal("AbsolutePosition"):Connect(follow)
+	board:GetPropertyChangedSignal("AbsoluteSize"):Connect(follow)
+	follow()
 	return b
 end
 

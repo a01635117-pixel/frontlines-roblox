@@ -541,10 +541,22 @@ function GameImpl:executeNextTick()
 	-- one current at loop start (removeExecution reassigns, never mutates).
 	local execs = self._execs
 	local n = #execs
+	-- Optional spike attribution (set game._profile = { spikes = {} } from a
+	-- test): time per execution module, kept for ticks over 80 ms.
+	local prof = self._profile
+	local cost = if prof then {} else nil
+	local tickStart = os.clock()
 	for i = 1, n do
 		local e = execs[i]
 		if (not self:inSpawnPhase() or e:activeDuringSpawnPhase()) and e:isActive() then
-			e:tick(self._ticks)
+			if cost then
+				local t0 = os.clock()
+				e:tick(self._ticks)
+				local key = debug.info(e.tick, "s")
+				cost[key] = (cost[key] or 0) + os.clock() - t0
+			else
+				e:tick(self._ticks)
+			end
 		end
 	end
 
@@ -554,7 +566,14 @@ function GameImpl:executeNextTick()
 	for i = 1, m do
 		local e = pending[i]
 		if not self:inSpawnPhase() or e:activeDuringSpawnPhase() then
-			e:init(self, self._ticks)
+			if cost then
+				local t0 = os.clock()
+				e:init(self, self._ticks)
+				local key = "init:" .. debug.info(e.init, "s")
+				cost[key] = (cost[key] or 0) + os.clock() - t0
+			else
+				e:init(self, self._ticks)
+			end
 			table.insert(inited, e)
 		else
 			table.insert(unInited, e)
@@ -574,8 +593,27 @@ function GameImpl:executeNextTick()
 	end
 
 	-- Flush pending water conversions + throttled graph rebuild.
+	local tw = os.clock()
 	for _, tile in self._waterManager:tick(self._ticks) do
 		self:_recordTileUpdate(tile)
+	end
+	if cost then
+		cost["waterManager"] = os.clock() - tw
+		local total = os.clock() - tickStart
+		if total > 0.08 then
+			local rows = {}
+			for k, v in cost do
+				table.insert(rows, { k = string.match(k, "[^%.]+$") or k, v = v })
+			end
+			table.sort(rows, function(a, b)
+				return a.v > b.v
+			end)
+			local parts = {}
+			for i = 1, math.min(4, #rows) do
+				table.insert(parts, string.format("%s %.0fms", rows[i].k, rows[i].v * 1000))
+			end
+			table.insert(prof.spikes, string.format("t%d %.0fms: %s", self._ticks, total * 1000, table.concat(parts, ", ")))
+		end
 	end
 	self._ticks += 1
 	return self._updates

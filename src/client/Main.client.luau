@@ -70,8 +70,49 @@ background.BorderSizePixel = 0
 background.Parent = gui
 
 local hud = Hud.new(gui)
-Audio.button(gui, game:GetService("GuiService"):GetGuiInset().Y + 8)
+local audioButton = Audio.button(gui, hud.board)
+-- Surrender (not in upstream): give up the land and watch / play again.
+local surrenderButton = Instance.new("TextButton")
+surrenderButton.Name = "Surrender"
+surrenderButton.AnchorPoint = Vector2.new(1, 0)
+surrenderButton.Size = UDim2.fromOffset(0, 40)
+surrenderButton.AutomaticSize = Enum.AutomaticSize.X
+surrenderButton.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
+surrenderButton.BackgroundTransparency = 0.25
+surrenderButton.Font = Enum.Font.GothamBold
+surrenderButton.TextSize = 15
+surrenderButton.TextColor3 = Color3.new(1, 1, 1)
+surrenderButton.Text = "🏳 Surrender"
+surrenderButton.Visible = false
+surrenderButton.ZIndex = 50
+do
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, 8)
+	c.Parent = surrenderButton
+	local pad = Instance.new("UIPadding")
+	pad.PaddingLeft, pad.PaddingRight = UDim.new(0, 12), UDim.new(0, 12)
+	pad.Parent = surrenderButton
+	local function follow()
+		surrenderButton.Position = audioButton.Position - UDim2.fromOffset(48, 0)
+	end
+	audioButton:GetPropertyChangedSignal("Position"):Connect(follow)
+	follow()
+end
+surrenderButton.Parent = gui
 Audio.startMusic()
+do
+	local pendingSave = nil
+	Audio.onChange(function(music, effects)
+		-- Save once the player stops clicking.
+		pendingSave = { music = music, effects = effects }
+		local mine = pendingSave
+		task.delay(1.5, function()
+			if pendingSave == mine then
+				Net.Intent:FireServer({ type = "audio_settings", music = music, effects = effects })
+			end
+		end)
+	end)
+end
 hud:setCountdown("…", "Waiting for the match to start")
 local controlPanel = ControlPanel.new(gui)
 gui.Parent = player:WaitForChild("PlayerGui")
@@ -81,6 +122,7 @@ gui.Parent = player:WaitForChild("PlayerGui")
 -- Lobby until the server starts the match (or we join one in progress).
 local lobbyScreen = LobbyScreen.new(gui, Net)
 local state = Net.GameState.OnClientEvent:Wait()
+Audio.load(state.audio)
 lobbyScreen:destroy()
 -- The server replicates only the selected map.
 local gameMap, _mini, manifest = MapLoader.load(Shared:WaitForChild("Maps"):WaitForChild(state.mapId))
@@ -196,8 +238,16 @@ Net.unpackNames(state.names, function(smallID, x, y, size)
 end)
 -- Units already in the match when we joined: no build/launch cues for them.
 local seenUnits = {}
+-- Defense coverage (Renderer.updateStructures): finished posts only.
+local function defensePost(u)
+	if u.unitType == "Defense Post" then
+		local live = u.isActive and not u.underConstruction
+		renderer:setDefensePost(u.id, if live then u.pos else nil, u.ownerID)
+	end
+end
 for _, u in state.units or {} do
 	seenUnits[u.id] = true
+	defensePost(u)
 	unitLayer:apply(u)
 end
 
@@ -248,7 +298,8 @@ local function myStats()
 end
 
 local myInfo = { disabled = state.disabledUnits or {} } -- latest Net.Me payload
-local playAgain: () -> () -- defined with the event handlers below
+local playAgain
+local showDeathModal: () -> () -- defined with the event handlers below
 
 -- Launcher vs local player (NukeTelegraphs.classifyOwner): 0 = self,
 -- 1 = teammate or ally, 2 = everyone else (and everything when spectating).
@@ -596,7 +647,14 @@ local radialMenu = RadialMenu.new({
 local function refreshPanelVisibility()
 	local mine = myStats()
 	controlPanel:setVisible(not inSpawnPhase and mine ~= nil and mine.tiles > 0)
+	surrenderButton.Visible = not inSpawnPhase and not gameOver and mine ~= nil and mine.tiles > 0
 end
+
+surrenderButton.Activated:Connect(function()
+	hud:showModal("Surrender? Your land becomes neutral.", "Cancel", false, "Surrender", function()
+		Net.Intent:FireServer({ type = "surrender" })
+	end)
+end)
 
 -- Server events ------------------------------------------------------------------
 
@@ -671,8 +729,16 @@ end
 Net.Units.OnClientEvent:Connect(function(list)
 	for _, u in list do
 		unitSound(u)
+		defensePost(u)
 		unitLayer:apply(u)
 	end
+end)
+
+-- Plain moves arrive batched every 2 ticks (server POS_EVERY).
+Net.UnitPos.OnClientEvent:Connect(function(buf)
+	Net.unpackUnitPos(buf, function(id, pos)
+		unitLayer:movePos(id, pos, 0.2)
+	end)
 end)
 
 Net.Tick.OnClientEvent:Connect(function(buf)
@@ -800,16 +866,37 @@ Net.Stats.OnClientEvent:Connect(function(buf)
 			myInfo.alliances, myInfo.requestsIn, myInfo.targets, myInfo.embargoes = {}, {}, {}, {}
 			refreshNameIcons()
 			Audio.play("defeat")
-			if state.canMatchmake then
-				hud:showModal("You died", "Spectate", false, "Play again", playAgain)
-			else
-				hud:showModal("You died", "Spectate")
-			end
+			showDeathModal()
 		end
 	end
 	refreshPanelVisibility()
 	refreshBoard()
 end)
+
+-- Death screen: Spectate, Play again and Rebirth (a banked one, or buy one
+-- for Robux; the server uses a bought rebirth straight away).
+function showDeathModal()
+	local rebirthText, rebirthFn = nil, nil
+	if not gameOver and (state.rebirthProduct or 0) ~= 0 then
+		local banked = state.rebirths or 0
+		rebirthText = if banked > 0
+			then Lang.t("Rebirth ({count} left)", { count = banked })
+			else Lang.t("Rebirth — R$ {price}", { price = state.rebirthPrice or 49 })
+		rebirthFn = function()
+			if (state.rebirths or 0) > 0 then
+				state.rebirths -= 1
+				Net.Intent:FireServer({ type = "rebirth" })
+			else
+				game:GetService("MarketplaceService"):PromptProductPurchase(player, state.rebirthProduct)
+			end
+		end
+	end
+	if state.canMatchmake then
+		hud:showModal("You died", "Spectate", false, "Play again", playAgain, rebirthText, rebirthFn)
+	else
+		hud:showModal("You died", "Spectate", false, nil, nil, rebirthText, rebirthFn)
+	end
+end
 
 -- "Play again": straight to the next match that is about to start (or a
 -- fresh singleplayer game when this one was singleplayer).
@@ -832,6 +919,13 @@ Net.Event.OnClientEvent:Connect(function(evt)
 		Audio.play("game-start")
 		inSpawnPhase = false
 		buildMenu:refresh()
+		refreshPanelVisibility()
+	elseif evt.type == "Reborn" then
+		-- Rebirth applied: back in the game with the old territory.
+		shownDeath = false
+		haveSpawned = true
+		hud.modal.Visible = false
+		Audio.play("spawn")
 		refreshPanelVisibility()
 	elseif evt.type == "MatchEnding" then
 		-- No "keep playing" on Roblox servers: a new match starts shortly.

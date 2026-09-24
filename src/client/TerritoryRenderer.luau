@@ -9,6 +9,10 @@
 --     border colour (colord .darken(0.125)), opaque
 --   * railroads (RailroadPass line mode, one tile wide): the tile owner's
 --     border colour, white for the local player, grey on unowned land
+--   * defense coverage (DefenseCoveragePass): tiles within defensePostRange
+--     of a finished same-owner Defense Post get their fill darkened
+--     (territoryDefenseDarken 0.85) and a checkerboard on their border
+--     (defenseCheckerDarken 0.7 on every other tile)
 --
 -- Tile state is the simulation's u16 per tile (bits 0-11 owner smallID).
 -- Changing a tile dirties it and its 4 neighbours (their border status may
@@ -24,6 +28,9 @@ local TERRITORY_ALPHA = 0.588 -- render-settings.json territoryAlpha
 local TERRITORY_SATURATION = 0.85 -- render-settings.json territorySaturation
 local OWNER_MASK = 0x0fff
 local FALLOUT_BIT = 0x2000 -- GameMap FALLOUT (bit 13)
+local DEFENSE_RANGE = 30 -- render-settings mapOverlay.defensePostRange
+local DEFENSE_FILL_DARKEN = 0.85 -- territoryDefenseDarken
+local DEFENSE_CHECKER_DARKEN = 0.7 -- defenseCheckerDarken
 
 local band = bit32.band
 local readu16, writeu16 = buffer.readu16, buffer.writeu16
@@ -61,7 +68,12 @@ function TerritoryRenderer.new(camera, gameMap)
 		dirty = {}, -- tile -> true
 		dirtyList = {},
 		fullRedraw = true,
+		posts = {}, -- unit id -> { x, y, owner } (finished Defense Posts)
+		postsByOwner = {}, -- smallID -> { [id] = post }
 	}, TerritoryRenderer)
+	if game:GetService("RunService"):IsStudio() then
+		_G.OpenFrontTerritory = self -- debugging handle (Studio only)
+	end
 
 	local cols = math.ceil(W / MAX_TILE)
 	local rows = math.ceil(H / MAX_TILE)
@@ -184,6 +196,63 @@ function TerritoryRenderer:setState(tile: number, s: number)
 	end
 end
 
+-- Defense Post `id` at `tile` for `owner`; nil tile removes it. Tiles in
+-- range of the old and new position are repainted.
+function TerritoryRenderer:setDefensePost(id: number, tile: number?, owner: number?)
+	local old = self.posts[id]
+	local W = self.W
+	if old and tile and old.x == tile % W and old.y == tile // W and old.owner == owner then
+		return
+	end
+	if old then
+		self.posts[id] = nil
+		local list = self.postsByOwner[old.owner]
+		if list then
+			list[id] = nil
+		end
+		self:_dirtyCircle(old.x, old.y)
+	end
+	if tile and owner and owner ~= 0 then
+		local post = { x = tile % W, y = tile // W, owner = owner }
+		self.posts[id] = post
+		self.postsByOwner[owner] = self.postsByOwner[owner] or {}
+		self.postsByOwner[owner][id] = post
+		self:_dirtyCircle(post.x, post.y)
+	end
+end
+
+function TerritoryRenderer:_dirtyCircle(cx: number, cy: number)
+	if self.fullRedraw then
+		return
+	end
+	local W, H, r = self.W, self.H, DEFENSE_RANGE
+	for y = math.max(0, cy - r), math.min(H - 1, cy + r) do
+		local dy = y - cy
+		local span = math.floor(math.sqrt(r * r - dy * dy))
+		for x = math.max(0, cx - span), math.min(W - 1, cx + span) do
+			self:_markDirty(y * W + x)
+		end
+	end
+end
+
+-- Is `tile` (owned by `owner`) within range of one of that owner's posts?
+function TerritoryRenderer:_defended(tile: number, owner: number): boolean
+	local list = self.postsByOwner[owner]
+	if list == nil or next(list) == nil then
+		return false
+	end
+	local W = self.W
+	local x, y = tile % W, tile // W
+	local r2 = DEFENSE_RANGE * DEFENSE_RANGE
+	for _, p in list do
+		local dx, dy = x - p.x, y - p.y
+		if dx * dx + dy * dy <= r2 then
+			return true
+		end
+	end
+	return false
+end
+
 -- Add (delta 1) or remove (delta -1) one railroad's tiles.
 function TerritoryRenderer:addRail(tiles: { number }, delta: number)
 	local rail = self.rail
@@ -283,7 +352,13 @@ function TerritoryRenderer:_basePixel(tile: number): number
 		or (x ~= 0 and band(readu16(state, (tile - 1) * 2), OWNER_MASK) ~= owner)
 		or (x ~= W - 1 and band(readu16(state, (tile + 1) * 2), OWNER_MASK) ~= owner)
 	if isBorder then
-		return self.border[owner] or 0xff000000
+		local bc = self.border[owner] or 0xff000000
+		-- Defended border: checkerboard, every other tile darkened.
+		if (x + tile // W) % 2 == 1 and self:_defended(tile, owner) then
+			local k = DEFENSE_CHECKER_DARKEN
+			return pack(math.floor(band(bc, 0xff) * k), math.floor(band(bit32.rshift(bc, 8), 0xff) * k), math.floor(band(bit32.rshift(bc, 16), 0xff) * k))
+		end
+		return bc
 	end
 	local f = self.fill[owner]
 	local pat = self.patterns and self.patterns[owner]
@@ -299,9 +374,10 @@ function TerritoryRenderer:_basePixel(tile: number): number
 		return t
 	end
 	local k = 1 - TERRITORY_ALPHA
-	local r = math.floor(band(t, 0xff) * k + f[1] + 0.5)
-	local g = math.floor(band(bit32.rshift(t, 8), 0xff) * k + f[2] + 0.5)
-	local b = math.floor(band(bit32.rshift(t, 16), 0xff) * k + f[3] + 0.5)
+	local d = if self:_defended(tile, owner) then DEFENSE_FILL_DARKEN else 1
+	local r = math.floor(band(t, 0xff) * k + f[1] * d + 0.5)
+	local g = math.floor(band(bit32.rshift(t, 8), 0xff) * k + f[2] * d + 0.5)
+	local b = math.floor(band(bit32.rshift(t, 16), 0xff) * k + f[3] * d + 0.5)
 	return pack(r, g, b)
 end
 

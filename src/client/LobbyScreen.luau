@@ -675,7 +675,9 @@ function LobbyScreen:_refresh()
 		-- The Singleplayer / Multiplayer switch goes first, above the maps.
 		self.sectionFrames.Mode.LayoutOrder = if simple then 0 else 2
 	end
-	self.title.Text = if public then "Multiplayer" elseif solo then "Singleplayer" else "Game Settings"
+	-- Translated here: the label is rewritten every broadcast, which races the
+	-- auto-translation hook.
+	self.title.Text = Lang.t(if public then "Multiplayer" elseif solo then "Singleplayer" else "Game Settings")
 	if solo then
 		self.hostLabel.Text = Lang.t("Pick a map and difficulty and start — you against the nations and bots.")
 	elseif public then
@@ -689,7 +691,7 @@ function LobbyScreen:_refresh()
 	elseif st.joinCode then
 		self.hostLabel.Text = (if host then Lang.t("You are the host. ") else Lang.t("Host: {hostName}. ", { hostName = hostName })) .. Lang.t("Friends join with code {code}.", { code = st.joinCode })
 	else
-		self.hostLabel.Text = if host then "You are the host — choose the settings and start the game." else Lang.t("Host: {hostName} — waiting for the host to start.", { hostName = hostName })
+		self.hostLabel.Text = if host then Lang.t("You are the host — choose the settings and start the game.") else Lang.t("Host: {hostName} — waiting for the host to start.", { hostName = hostName })
 	end
 	self.startButton.Visible = host
 	-- Host without the Host Pass: mark the locked sections.
@@ -699,7 +701,7 @@ function LobbyScreen:_refresh()
 			hdr.label.Text = if locked then hdr.base .. "  🔒 " .. Lang.t("Host Pass") else hdr.base
 		end
 	end
-	local status = if st.secondsLeft then Lang.t("Starting in {seconds} s", { seconds = st.secondsLeft }) else (if host then "" else "Waiting for the host…")
+	local status = if st.secondsLeft then Lang.t("Starting in {seconds} s", { seconds = st.secondsLeft }) else (if host then "" else Lang.t("Waiting for the host…"))
 	self.status.Text = if self.notice then self.notice .. "   " .. status else status
 	local mm = st.canMatchmake == true
 	self.codeBox.Visible = mm and public
