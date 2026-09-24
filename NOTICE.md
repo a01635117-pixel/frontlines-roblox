@@ -46,6 +46,7 @@ license:
 - `src/shared/Data/QuickChat.luau` — quick-chat phrases (`tools/pack-quickchat.mjs`)
 - `src/server/Core/Data/TribeNameThemes.luau` — tribe names (`tools/pack-data.mjs`)
 - `src/shared/Data/ThemeColors.luau` — theme colours (`tools/pack-colors.mjs`)
+- `src/shared/Data/Flags.luau` — country flags (`tools/pack-flags.mjs`, from `resources/flags`)
 - `src/shared/Data/Translations.luau` — UI translations (`tools/pack-lang.mjs`,
   from `resources/lang/*.json`, merged with this project's own translations in
   `tools/lang/`, which are released under the same license)
