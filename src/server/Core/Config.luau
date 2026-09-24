@@ -131,7 +131,8 @@ function Config:msPerTick(): number
 	return 100
 end
 function Config:SAMCooldown(): number
-	return 90
+	-- Roblox port: 130 (upstream 90), players found SAMs too strong.
+	return 130
 end
 function Config:SiloCooldown(): number
 	return 90
@@ -622,7 +623,8 @@ end
 
 function Config:nukeMagnitudes(unitType: string): { inner: number, outer: number }
 	if unitType == UnitType.MIRVWarhead then
-		return { inner = 12, outer = 18 }
+		-- Roblox port: stronger than upstream (12 / 18), players found MIRVs too weak.
+		return { inner = 16, outer = 24 }
 	elseif unitType == UnitType.AtomBomb then
 		return { inner = 12, outer = 30 }
 	elseif unitType == UnitType.HydrogenBomb then
@@ -666,7 +668,8 @@ function Config:defaultSamRange(): number
 	return 70
 end
 function Config:maxSamRange(): number
-	return 150
+	-- Roblox port: 130 (upstream 150): level 1 covers 50 tiles instead of 70.
+	return 130
 end
 function Config:samRange(level: number): number
 	return self:maxSamRange() - 480 / (level + 5)

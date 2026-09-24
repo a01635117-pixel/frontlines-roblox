@@ -369,4 +369,5 @@ return {
 	{ key = "rbx.141", source = "⚠️  Betrayals", values = { ["pl"] = "⚠️  Zdrady" } },
 	{ key = "rbx.142", source = "🏛️ Nation", values = { ["pl"] = "🏛️ Naród" } },
 	{ key = "rbx.143", source = "🏳 Surrender", values = { ["pl"] = "🏳 Poddaj się" } },
+	{ key = "rbx.144", source = "🛡 {name} is back (Rebirth) and protected for {seconds} s", values = { ["pl"] = "🛡 {name} wraca (Odrodzenie) i jest chroniony przez {seconds} s" } },
 }

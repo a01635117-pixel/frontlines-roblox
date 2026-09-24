@@ -34,6 +34,9 @@ local HIGH_DENSITY_NUKE_THRESHOLD = 1 / 75
 -- Minimum sum of structure levels a player needs to qualify as a high-density nuke target.
 local MIN_LEVEL_SUM_FOR_HIGH_DENSITY_NUKE = 5
 
+-- Roblox port: at most this many structures are scored as nuke centres.
+local MAX_STRUCTURE_CANDIDATES = 40
+
 -- Upstream src/core/Util.ts boundingBoxTiles: the square ring of tiles at
 -- Chebyshev distance `radius` around `center`.
 local function boundingBoxTiles(gm, center: number, radius: number): { number }
@@ -132,7 +135,22 @@ function NationNukeBehavior:maybeSendNuke()
 	-- Use more random tiles on Impossible difficulty to improve chances of finding a perfect SAM outranging spot
 	local numRandomTiles = if difficulty == Difficulty.Impossible then 30 else 10
 	local allTiles = NationUtils.randTerritoryTileArray(self.random, self.game, nukeTarget, numRandomTiles)
-	for _, u in structures do
+	-- Roblox port: each candidate gets a full blast-area check and score, and a
+	-- big late-game nation has hundreds of structures (20 ms per decision, many
+	-- decisions per second across nations). Score at most 40 of them, picked
+	-- at random, alongside the random tiles.
+	local candidates = structures
+	if #structures > MAX_STRUCTURE_CANDIDATES then
+		candidates = table.clone(structures)
+		for i = 1, MAX_STRUCTURE_CANDIDATES do
+			local j = self.random:nextInt(i, #candidates + 1)
+			candidates[i], candidates[j] = candidates[j], candidates[i]
+		end
+		for i = #candidates, MAX_STRUCTURE_CANDIDATES + 1, -1 do
+			candidates[i] = nil
+		end
+	end
+	for _, u in candidates do
 		table.insert(allTiles, u:tile())
 	end
 

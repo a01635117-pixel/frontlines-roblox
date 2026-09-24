@@ -302,14 +302,50 @@ function StationExec:init(mg)
 	end
 end
 
+-- Connecting a station lays its railroads (pathfinding for each nearby
+-- station). A new factory stations every city / port / factory around it on
+-- the same tick and one station can lay a dozen railroads, which made single
+-- ticks take up to 400 ms late in a match. Roblox port: the connection runs
+-- as a coroutine that pauses once this tick's 8 ms rail budget is used and
+-- resumes on the next tick (every job makes progress at least once a tick).
+local CONNECT_BUDGET = 0.008
+local connectBudget = { tick = -1, deadline = 0 }
+
 function StationExec:tick(ticks: number)
 	if not self._active or self.unit == nil then
 		return
 	end
-	if self.station == nil then
-		-- Executions can't be created during init, so it happens on the first tick.
-		self.station = RailNetwork.TrainStation.new(self.mg, self.unit)
-		self.mg:railNetwork():connectStation(self.station)
+	if self.station == nil or self.connectJob then
+		if connectBudget.tick ~= ticks then
+			connectBudget.tick, connectBudget.deadline = ticks, os.clock() + CONNECT_BUDGET
+		end
+		if not self.unit:isActive() then
+			self._active = false -- destroyed while waiting for the budget
+			return
+		end
+		if self.station == nil then
+			if os.clock() > connectBudget.deadline then
+				return -- no budget left this tick
+			end
+			-- Executions can't be created during init, so it happens on the first tick.
+			local station = RailNetwork.TrainStation.new(self.mg, self.unit)
+			local rail = self.mg:railNetwork()
+			self.station = station
+			self.connectJob = coroutine.create(function()
+				rail:connectStation(station)
+			end)
+		end
+		RailNetwork.setSliceDeadline(connectBudget.deadline)
+		local ok, err = coroutine.resume(self.connectJob)
+		RailNetwork.setSliceDeadline(math.huge)
+		if not ok then
+			warn("[Rail] station connection failed:", err)
+			self.connectJob = nil
+		elseif coroutine.status(self.connectJob) == "dead" then
+			self.connectJob = nil
+		else
+			return -- still connecting
+		end
 	end
 	if not self.station:isActive() then
 		self._active = false

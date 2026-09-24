@@ -71,6 +71,9 @@ function NationExecution:_getAttackRate(): number
 	error(`unknown difficulty {difficulty}`)
 end
 
+local AI_TURN_BUDGET = 0.02
+local aiBudget = { tick = -1, spent = 0 }
+
 function NationExecution:tick(ticks: number)
 	local mg, player = self.mg, self.player
 	-- Ship tracking
@@ -151,7 +154,26 @@ function NationExecution:tick(ticks: number)
 		return
 	end
 
-	if ticks % self.attackRate ~= self.attackTick then
+	-- Roblox port: a nation's main turn (below) can take 10-20 ms late in a
+	-- match (nuke targeting, border scans), and several landing on one tick
+	-- stalled the server. Turns share a 20 ms budget per tick; a turn that
+	-- does not fit waits for the next tick instead of being skipped.
+	if ticks % self.attackRate == self.attackTick then
+		self._turnDue = true
+	end
+	if self._turnDue then
+		if aiBudget.tick ~= ticks then
+			aiBudget.tick, aiBudget.spent = ticks, 0
+		end
+		if aiBudget.spent < AI_TURN_BUDGET then
+			self._turnDue = false
+			local t0 = os.clock()
+			self:_mainTurn()
+			aiBudget.spent += os.clock() - t0
+		end
+		return
+	end
+	do
 		-- handleStructures also runs at 1/3 and 2/3 of the interval, otherwise
 		-- nations can earn more gold than they spend.
 		if player:isAlive() then
@@ -164,7 +186,9 @@ function NationExecution:tick(ticks: number)
 		end
 		return
 	end
+end
 
+function NationExecution:_mainTurn()
 	self.emojiBehavior:maybeSendCasualEmoji()
 	self:_updateRelationsFromEmbargos()
 	self.allianceBehavior:handleAllianceRequests()

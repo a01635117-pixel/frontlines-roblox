@@ -436,8 +436,27 @@ function AiAttackBehavior:maybeAttack()
 			borderHasNonNukedTerraNullius = true
 		end
 	end
-	for t in player:borderTiles() do
-		game:forEachNeighbor(t, visit)
+	-- Roblox port: the border scan is cached per nation (a big late-game
+	-- border is tens of thousands of tiles, ~15 ms per scan) and redone every
+	-- 20 ticks: a nation at war changes territory every tick, so a version
+	-- check would never hit.
+	local cache = self._borderScan
+	if cache and game:ticks() - cache.tick < 20 then
+		for _, owner in cache.owners do
+			if owner:isAlive() then
+				borderingPlayerSet:add(owner)
+			end
+		end
+		borderHasNonNukedTerraNullius = cache.terraNullius
+	else
+		for t in player:borderTiles() do
+			game:forEachNeighbor(t, visit)
+		end
+		self._borderScan = {
+			tick = game:ticks(),
+			owners = borderingPlayerSet:toArray(),
+			terraNullius = borderHasNonNukedTerraNullius,
+		}
 	end
 	local playerNeighbors = player:nearby()
 	for _, n in playerNeighbors do

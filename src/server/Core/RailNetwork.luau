@@ -393,6 +393,8 @@ end
 -- RailNetworkImpl ---------------------------------------------------------------------------
 
 local Impl = {}
+-- os.clock() deadline for rail work this tick (see TrainStationExecution).
+Impl.sliceDeadline = math.huge
 Impl.__index = Impl
 
 local MAX_CONNECTION_DISTANCE = 4
@@ -641,6 +643,15 @@ function Impl:_connectToNearbyStations(station)
 				neighborCluster:addStation(station)
 				editedClusters:add(neighborCluster)
 			end
+			-- Roblox port: when run as a TrainStationExecution job, pause here once
+			-- this tick's rail budget is used up (a station can lay a dozen
+			-- railroads, which made single ticks take 400 ms).
+			if coroutine.isyieldable() and os.clock() > Impl.sliceDeadline then
+				coroutine.yield()
+				if not station:isActive() then
+					return -- destroyed while waiting
+				end
+			end
 		end
 	end
 	if editedClusters:size() > 1 then
@@ -735,6 +746,12 @@ function Impl:_mergeClusters(clusters)
 	for cluster in clusters do
 		merged:merge(cluster)
 	end
+end
+
+-- Deadline (os.clock) for rail work this tick; connectStation yields past it
+-- when running inside a coroutine (TrainStationExecution).
+function RailNetwork.setSliceDeadline(t: number)
+	Impl.sliceDeadline = t
 end
 
 return RailNetwork

@@ -33,6 +33,9 @@ Players.CharacterAutoLoads = false
 local AUTO_START_SECONDS = script:GetAttribute("AutoStartSeconds") or (if RunService:IsStudio() then nil else 60)
 local PUBLIC_BOTS = 250
 local TICK_SECONDS = 0.1 -- Config.msPerTick() = 100
+-- Studio load tests: attribute TickSpeed runs the simulation N times faster.
+local TICK_SPEED = if RunService:IsStudio() then math.max(1, script:GetAttribute("TickSpeed") or 1) else 1
+local TICK_STEP = TICK_SECONDS / TICK_SPEED
 local STATS_EVERY = 5 -- ticks between stats broadcasts
 local MAX_INTENTS_PER_TICK = 10 -- per player
 
@@ -985,6 +988,7 @@ end
 -- Rebirth: a dead human spends a banked rebirth (bought for Robux) to get
 -- back the biggest territory they had this match.
 local PlayerExecution = require(script.Parent.Core.Execution.PlayerExecution)
+local REBIRTH_SHIELD_TICKS = 100
 function requestRebirth(player: Player, me): boolean
 	local clientID = clientIDOf(player)
 	if mg:inSpawnPhase() or me:isAlive() or peaks[clientID] == nil or mg:getWinner() ~= nil then
@@ -1010,6 +1014,10 @@ function applyRebirth(p)
 		return
 	end
 	p:setTroops(math.max(p:troops(), pk.troops))
+	-- 10 s shield: nobody can attack or nuke them (PlayerImpl:isImmune), shown
+	-- to everyone.
+	p._shieldUntil = mg:ticks() + REBIRTH_SHIELD_TICKS
+	Net.Event:FireAllClients({ type = "Shield", smallID = p:smallID(), name = p:displayName(), seconds = REBIRTH_SHIELD_TICKS / 10 })
 	-- PlayerExecution stopped when they died; start a fresh one.
 	mg:addExecution(PlayerExecution.new(p))
 	lastThreats[p:clientID()] = nil
@@ -1870,8 +1878,8 @@ RunService.Heartbeat:Connect(function(dt)
 	accumulator += dt
 	-- Catch up at most 3 ticks per frame so a hitch can't snowball.
 	local steps = 0
-	while accumulator >= TICK_SECONDS and steps < 3 do
-		accumulator -= TICK_SECONDS
+	while accumulator >= TICK_STEP and steps < 3 * TICK_SPEED do
+		accumulator -= TICK_STEP
 		steps += 1
 		local t0 = os.clock()
 		running = runTick()
@@ -1899,7 +1907,7 @@ RunService.Heartbeat:Connect(function(dt)
 			break
 		end
 	end
-	if accumulator > TICK_SECONDS * 3 then
+	if accumulator > TICK_STEP * 3 * TICK_SPEED then
 		accumulator = 0
 	end
 end)

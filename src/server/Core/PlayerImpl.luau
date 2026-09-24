@@ -354,6 +354,10 @@ function PlayerImpl:nukeSpawn(tile: number, nukeType: string)
 		return false
 	end
 	local owner = mg:owner(tile)
+	-- Rebirth shield: no nukes on a shielded player's land.
+	if owner:isPlayer() and owner ~= self and owner._shieldUntil and mg:ticks() < owner._shieldUntil then
+		return false
+	end
 	-- Allow nuking teammates after the game is over (aftergame fun), but not in singleplayer.
 	local gameOver = mg:getWinner() ~= nil and mg:config():gameConfig().gameType ~= GameTypes.GameType.Singleplayer
 	if owner:isPlayer() and self:isOnSameTeam(owner) and not gameOver then
@@ -1419,6 +1423,10 @@ function PlayerImpl:incomingAttacks(): { any }
 end
 
 function PlayerImpl:isImmune(): boolean
+	-- Roblox port: a short shield after a Rebirth (see GameServer applyRebirth).
+	if self._shieldUntil and self.mg:ticks() < self._shieldUntil then
+		return true
+	end
 	local t = self:type()
 	if t == PlayerType.Human then
 		return self.mg:isSpawnImmunityActive()

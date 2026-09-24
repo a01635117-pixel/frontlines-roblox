@@ -704,6 +704,15 @@ function WarshipExecution:_patrol()
 		warship:move(result.node)
 	elseif result.status == PathStatus.NEXT then
 		warship:move(result.node)
+		-- Roblox port: warships sail 2 tiles per tick (upstream 1) so they
+		-- answer move orders faster.
+		local second = self.pathfinder:next(warship:tile(), warship:targetTile())
+		if second.status == PathStatus.COMPLETE then
+			warship:setTargetTile(nil)
+			warship:move(second.node)
+		elseif second.status == PathStatus.NEXT then
+			warship:move(second.node)
+		end
 	elseif result.status == PathStatus.NOT_FOUND then
 		warship:setTargetTile(nil)
 	end

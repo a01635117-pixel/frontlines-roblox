@@ -25,11 +25,11 @@ local FLICKER = {
 local ANGRY = Color3.new(0.784, 0, 0) -- render-settings unit.angry
 local UNTARGETABLE_ALPHA = 0.6
 -- Config.nukeMagnitudes outer radius, in tiles.
-local BLAST_RADIUS = { ["Atom Bomb"] = 30, ["Hydrogen Bomb"] = 100, ["MIRV Warhead"] = 18 }
+local BLAST_RADIUS = { ["Atom Bomb"] = 30, ["Hydrogen Bomb"] = 100, ["MIRV Warhead"] = 24 }
 -- NukeTelegraphPass: NUKE_MAGNITUDES circles at the target of a nuke in
 -- flight, coloured by launcher (render-settings nukeTelegraph: self green,
 -- ally yellow, enemy red; alpha 0.85 pulsing +-0.1, inner fill 0.6 fainter).
-local NUKE_MAG = { ["Atom Bomb"] = { 12, 30 }, ["Hydrogen Bomb"] = { 80, 100 }, ["MIRV Warhead"] = { 12, 18 } }
+local NUKE_MAG = { ["Atom Bomb"] = { 12, 30 }, ["Hydrogen Bomb"] = { 80, 100 }, ["MIRV Warhead"] = { 16, 24 } }
 local TELEGRAPH_COLORS = { [0] = Color3.new(0, 1, 0), Color3.new(1, 1, 0), Color3.new(1, 0, 0) }
 local function circle(parent: Instance, name: string, color: Color3, filled: boolean)
 	local f = Instance.new("Frame")
@@ -513,8 +513,11 @@ function UnitLayer:_place(e)
 	local size = math.clamp(camera.zoom * 3, MIN_STRUCT, MAX_STRUCT)
 	local p = camera:screenPos(map:x(e.pos), map:y(e.pos))
 	e.frame.Position = UDim2.fromOffset(p.X, p.Y)
-	e.frame.Size = UDim2.fromOffset(size, size)
-	e.levelLabel.TextSize = math.max(9, size * 0.5)
+	if e.placedSize ~= size then
+		e.placedSize = size
+		e.frame.Size = UDim2.fromOffset(size, size)
+		e.levelLabel.TextSize = math.max(9, size * 0.5)
+	end
 end
 
 -- Batched move (Net.UnitPos, every `interval` seconds): glide there over
@@ -545,9 +548,16 @@ function UnitLayer:render()
 	local tick = if self.tickNow then self.tickNow() else 0
 	-- One sprite pixel per tile (never below one screen pixel).
 	local cellPx = Sprites.CELL * math.max(camera.zoom, 1)
+	-- Structures never move: re-place them only when the camera did (late in
+	-- a match there are thousands, and setting Position / Size / TextSize on
+	-- each every frame was a large part of the frame).
+	local camMoved = camera.zoom ~= self._camZ or camera.panX ~= self._camX or camera.panY ~= self._camY
+	self._camZ, self._camX, self._camY = camera.zoom, camera.panX, camera.panY
 	for _, e in self.units do
 		if e.isStructure then
-			self:_place(e)
+			if camMoved then
+				self:_place(e)
+			end
 			if e.missileTimers or e.underConstruction then
 				self:_paintReload(e)
 			end
@@ -570,7 +580,10 @@ function UnitLayer:render()
 		end
 		local p = camera:screenPos(x, y)
 		e.frame.Position = UDim2.fromOffset(p.X, p.Y)
-		e.frame.Size = UDim2.fromOffset(cellPx, cellPx)
+		if e.placedSize ~= cellPx then
+			e.placedSize = cellPx
+			e.frame.Size = UDim2.fromOffset(cellPx, cellPx)
+		end
 		if e.flicker or e.retreating then
 			self:_paintSprite(e, tick)
 		end

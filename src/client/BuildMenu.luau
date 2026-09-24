@@ -55,7 +55,7 @@ local HIGHLIGHT_UNIT = {
 
 -- Ghost range circle (BuildPreviewController): defensePostRange, samRange(1),
 -- nuke outer blast radius.
-local RANGE = { ["Defense Post"] = 30, ["SAM Launcher"] = 70, ["Atom Bomb"] = 30, ["Hydrogen Bomb"] = 100 }
+local RANGE = { ["Defense Post"] = 30, ["SAM Launcher"] = 50, ["Atom Bomb"] = 30, ["Hydrogen Bomb"] = 100 }
 local QUERY_INTERVAL = 0.12 -- s between ghost availability queries
 local OK_COLOR = C.green400
 local UPGRADE_COLOR = C.blue400

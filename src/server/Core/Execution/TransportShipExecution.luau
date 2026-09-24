@@ -209,6 +209,12 @@ function TransportShipExecution:tick(ticks: number)
 		return
 	elseif result.status == PathStatus.NEXT then
 		boat:move(result.node)
+		-- Roblox port: boats sail 2 tiles per tick (upstream 1); players found
+		-- them too slow. Arrival is still handled on the next tick.
+		local second = self.pathFinder:next(boat:tile(), self.dst)
+		if second.status == PathStatus.NEXT then
+			boat:move(second.node)
+		end
 	else -- NOT_FOUND
 		local map = mg:map()
 		local bt = boat:tile()

@@ -11,7 +11,7 @@ local PARABOLA_MIN_HEIGHT = 50
 local TARGETABLE_RANGE = 150
 local TARGETABLE_RANGE_SQ = TARGETABLE_RANGE * TARGETABLE_RANGE
 local THRESHOLD_SAMPLES = 32
-local MAX_SAM_RANGE = 150
+local MAX_SAM_RANGE = 130 -- Config.maxSamRange (Roblox tuning; upstream 150)
 local SAM_SAFETY_MARGIN = 0.75
 
 -- render-settings.json nukeTrajectory

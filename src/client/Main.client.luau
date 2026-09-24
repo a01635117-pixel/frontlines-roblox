@@ -323,6 +323,7 @@ end
 unitLayer.relationOf = relationOf
 local myBordering = nil -- set of smallIDs we share a border with
 local refreshNameIcons -- defined with the name icons below
+local shields = {} -- smallID -> os.clock() the Rebirth shield ends
 
 local buildMenu = BuildMenu.new({
 	gui = gui,
@@ -721,7 +722,7 @@ local function unitSound(u)
 			Audio.play("hydrogen-hit")
 		elseif u.unitType == "MIRV Warhead" then
 			-- Hundreds of warheads: at most one boom per half second.
-			Audio.play("atom-hit", 0.5)
+			Audio.play("atom-hit", 0.3)
 		end
 	end
 end
@@ -800,6 +801,9 @@ function refreshNameIcons()
 		end
 		if embargoes[smallID] then
 			table.insert(icons, { icon = "embargo" })
+		end
+		if shields[smallID] and os.clock() < shields[smallID] then
+			table.insert(icons, { icon = "defensePost", color = Color3.fromHex("#22d3ee") })
 		end
 		local nuke = nukeOwners[smallID]
 		if nuke and smallID ~= me then
@@ -927,6 +931,18 @@ Net.Event.OnClientEvent:Connect(function(evt)
 		hud.modal.Visible = false
 		Audio.play("spawn")
 		refreshPanelVisibility()
+	elseif evt.type == "Shield" then
+		-- Someone came back with a Rebirth: shielded for a few seconds.
+		shields[evt.smallID] = os.clock() + evt.seconds
+		refreshNameIcons()
+		task.delay(evt.seconds + 0.1, refreshNameIcons)
+		eventsDisplay:add({
+			type = "Message",
+			message = Lang.t("🛡 {name} is back (Rebirth) and protected for {seconds} s", { name = evt.name, seconds = evt.seconds }),
+			raw = true,
+			messageType = 13,
+			focusPlayerID = evt.smallID,
+		})
 	elseif evt.type == "MatchEnding" then
 		-- No "keep playing" on Roblox servers: a new match starts shortly.
 		matchEndsAt = os.clock() + evt.seconds
