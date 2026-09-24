@@ -1,7 +1,8 @@
 -- Cosmetics shop (Roblox monetisation; upstream's store sells its own
--- proprietary skins). Sections: subscription, daily deal, free trial for a
--- rewarded ad, passes (supporter, custom colour, host, flag), bundles, then
--- the items by kind. Everything is cosmetic or a lobby convenience.
+-- proprietary skins). A large panel with category tabs on the left and
+-- cards on the right: Featured (subscription banner, deal of the day, free
+-- trial, bundles), Passes, Patterns, Name colours, Nuke blasts.
+-- Everything is cosmetic or a lobby convenience (no pay-to-win).
 
 local AdService = game:GetService("AdService")
 local AssetService = game:GetService("AssetService")
@@ -16,39 +17,27 @@ local Lang = require(script.Parent.Lang)
 local FlagAtlas = require(script.Parent.FlagAtlas)
 
 local F = Style.font
-local Z = Modal.zinc
-local ACCENT = Color3.fromHex("#4f46e5")
-local GOLD = Color3.fromRGB(255, 214, 90)
-local GREEN = Color3.fromRGB(34, 197, 94)
+local Z = 120 -- base ZIndex
+
+local COL = {
+	shade = Color3.fromRGB(3, 7, 18),
+	panel = Color3.fromRGB(17, 24, 39),
+	side = Color3.fromRGB(11, 16, 29),
+	card = Color3.fromRGB(31, 41, 55),
+	cardHi = Color3.fromRGB(42, 54, 72),
+	preview = Color3.fromRGB(21, 30, 46),
+	ocean = Color3.fromRGB(46, 94, 140),
+	text = Color3.fromRGB(243, 244, 246),
+	sub = Color3.fromRGB(156, 163, 175),
+	buy = Color3.fromRGB(0, 176, 111), -- Roblox green
+	equip = Color3.fromRGB(59, 130, 246),
+	equipped = Color3.fromRGB(55, 65, 81),
+	gold = Color3.fromRGB(250, 204, 21),
+	goldDark = Color3.fromRGB(161, 98, 7),
+	tab = Color3.fromRGB(31, 41, 55),
+}
 
 local ShopScreen = {}
-
--- 48x48 swatch of a pattern in a sample blue (primary) / dark blue (secondary).
-local swatchCache = {}
-local function patternSwatch(item)
-	local img = swatchCache[item.id]
-	if img then
-		return img
-	end
-	local size = 48
-	img = AssetService:CreateEditableImage({ Size = Vector2.new(size, size) })
-	local px = buffer.create(size * size * 4)
-	local cell = 3
-	for y = 0, size - 1 do
-		for x = 0, size - 1 do
-			local cx, cy = (x // cell) % #item.rows[1], (y // cell) % #item.rows
-			local secondary = string.sub(item.rows[cy + 1], cx + 1, cx + 1) == "#"
-			local o = (y * size + x) * 4
-			buffer.writeu8(px, o, if secondary then 30 else 96)
-			buffer.writeu8(px, o + 1, if secondary then 64 else 165)
-			buffer.writeu8(px, o + 2, if secondary then 175 else 250)
-			buffer.writeu8(px, o + 3, 255)
-		end
-	end
-	img:WritePixelsBuffer(Vector2.zero, Vector2.new(size, size), px)
-	swatchCache[item.id] = img
-	return img
-end
 
 local function rgb(c): Color3
 	return Color3.fromRGB(c[1], c[2], c[3])
@@ -58,42 +47,230 @@ local function hours(seconds: number): string
 	return `{math.max(1, math.ceil(seconds / 3600))} h`
 end
 
+-- Pattern swatch drawn like a territory: player colour + border colour cells.
+local swatchCache = {}
+local function patternSwatch(item)
+	local img = swatchCache[item.id]
+	if img then
+		return img
+	end
+	local size = 64
+	img = AssetService:CreateEditableImage({ Size = Vector2.new(size, size) })
+	local px = buffer.create(size * size * 4)
+	local cell = 4
+	for y = 0, size - 1 do
+		for x = 0, size - 1 do
+			local cx, cy = (x // cell) % #item.rows[1], (y // cell) % #item.rows
+			local secondary = string.sub(item.rows[cy + 1], cx + 1, cx + 1) == "#"
+			local o = (y * size + x) * 4
+			buffer.writeu8(px, o, if secondary then 29 else 96)
+			buffer.writeu8(px, o + 1, if secondary then 78 else 165)
+			buffer.writeu8(px, o + 2, if secondary then 216 else 250)
+			buffer.writeu8(px, o + 3, 255)
+		end
+	end
+	img:WritePixelsBuffer(Vector2.zero, Vector2.new(size, size), px)
+	swatchCache[item.id] = img
+	return img
+end
+
+-- Small helpers ------------------------------------------------------------------------
+
+local function frame(parent: Instance, name: string, color: Color3?, z: number?): Frame
+	local f = Instance.new("Frame")
+	f.Name = name
+	f.BorderSizePixel = 0
+	f.BackgroundColor3 = color or Color3.new()
+	f.BackgroundTransparency = if color then 0 else 1
+	f.ZIndex = z or Z
+	f.Parent = parent
+	return f
+end
+
+local function text(parent: Instance, name: string, s: string, size: number, font: Font?, color: Color3?, z: number?): TextLabel
+	local t = Instance.new("TextLabel")
+	t.Name = name
+	t.BackgroundTransparency = 1
+	t.Text = s
+	t.TextSize = size
+	t.FontFace = font or F.semibold
+	t.TextColor3 = color or COL.text
+	t.TextWrapped = true
+	t.ZIndex = z or Z
+	t.Parent = parent
+	return t
+end
+
+local function corner(parent: Instance, r: number)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, r)
+	c.Parent = parent
+end
+
+local function stroke(parent: Instance, color: Color3, thickness: number, transparency: number?)
+	local s = Instance.new("UIStroke")
+	s.Color = color
+	s.Thickness = thickness
+	s.Transparency = transparency or 0
+	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	s.Parent = parent
+	return s
+end
+
+local function gradient(parent: Instance, a: Color3, b: Color3, rotation: number?)
+	local g = Instance.new("UIGradient")
+	g.Color = ColorSequence.new(a, b)
+	g.Rotation = rotation or 90
+	g.Parent = parent
+end
+
+local function pill(parent: Instance, label: string, color: Color3, z: number, onClick: (() -> ())?)
+	local b = Instance.new("TextButton")
+	b.Name = "Action"
+	b.AutoButtonColor = onClick ~= nil
+	b.Text = label
+	b.TextSize = 15
+	b.FontFace = F.bold
+	b.TextColor3 = Color3.new(1, 1, 1)
+	b.BackgroundColor3 = color
+	b.BorderSizePixel = 0
+	b.ZIndex = z
+	b.Parent = parent
+	corner(b, 8)
+	if onClick then
+		b.Activated:Connect(onClick)
+	else
+		b.TextTransparency = 0.35
+	end
+	return b
+end
+
+-- Shop -----------------------------------------------------------------------------------
+
 function ShopScreen.open(gui: Instance, net)
-	local _, card, close = Modal.open(gui, "Shop", 600, 110)
-	local title = Style.text(card, "Title", "Shop — cosmetics only, no pay-to-win", 18, F.bold, Z.z50)
-	title.LayoutOrder = 1
-	title.ZIndex = card.ZIndex + 1
-	local status = Style.text(card, "Status", "Loading…", 13, F.medium, Z.z400)
-	status.LayoutOrder = 2
-	status.ZIndex = card.ZIndex + 1
-
-	local scroll = Instance.new("ScrollingFrame")
-	scroll.Name = "Items"
-	scroll.BackgroundTransparency = 1
-	scroll.BorderSizePixel = 0
-	scroll.LayoutOrder = 3
-	scroll.Size = UDim2.new(1, 0, 0, math.min(420, gui.AbsoluteSize.Y - 150))
-	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-	scroll.CanvasSize = UDim2.fromOffset(0, 0)
-	scroll.ScrollBarThickness = 4
-	scroll.ZIndex = card.ZIndex + 1
-	scroll.Parent = card
-	local list = Style.column(scroll, 12)
-	list.SortOrder = Enum.SortOrder.LayoutOrder
-
 	local closed = false
-	local render
+	local state = nil
 	local adReady = false
+	local activeTab = "featured"
+
+	-- Backdrop + panel.
+	local shade = Instance.new("TextButton")
+	shade.Name = "Shop"
+	shade.Text = ""
+	shade.AutoButtonColor = false
+	shade.BackgroundColor3 = COL.shade
+	shade.BackgroundTransparency = 0.35
+	shade.BorderSizePixel = 0
+	shade.Size = UDim2.fromScale(1, 1)
+	shade.ZIndex = Z
+	shade.Parent = gui
+
+	local screen = gui.AbsoluteSize
+	local compact = screen.X < 760
+	local panel = Instance.new("TextButton") -- swallows clicks
+	panel.Name = "Panel"
+	panel.Text = ""
+	panel.AutoButtonColor = false
+	panel.BackgroundColor3 = COL.panel
+	panel.BorderSizePixel = 0
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.Position = UDim2.fromScale(0.5, 0.5)
+	panel.Size = UDim2.fromOffset(math.min(1040, screen.X - 24), math.min(660, screen.Y - 24))
+	panel.ZIndex = Z + 1
+	panel.Parent = shade
+	corner(panel, 16)
+	stroke(panel, Color3.new(1, 1, 1), 1, 0.9)
+
+	local function close()
+		if closed then
+			return
+		end
+		closed = true
+		shade:Destroy()
+	end
+	shade.Activated:Connect(close)
+
+	-- Header.
+	local header = frame(panel, "Header", nil, Z + 2)
+	header.Size = UDim2.new(1, 0, 0, 64)
+	local title = text(header, "Title", Lang.t("Shop"), 26, F.bold, COL.text, Z + 2)
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Position = UDim2.fromOffset(24, 10)
+	title.Size = UDim2.new(0, 200, 0, 30)
+	local subtitle = text(header, "Subtitle", Lang.t("Cosmetics only — no pay-to-win"), 14, F.medium, COL.sub, Z + 2)
+	subtitle.TextXAlignment = Enum.TextXAlignment.Left
+	subtitle.Position = UDim2.fromOffset(24, 38)
+	subtitle.Size = UDim2.new(1, -120, 0, 18)
+	local x = Instance.new("TextButton")
+	x.Name = "Close"
+	x.Text = "×"
+	x.TextSize = 24
+	x.FontFace = F.bold
+	x.TextColor3 = COL.text
+	x.BackgroundColor3 = COL.card
+	x.AnchorPoint = Vector2.new(1, 0)
+	x.Position = UDim2.new(1, -16, 0, 14)
+	x.Size = UDim2.fromOffset(36, 36)
+	x.ZIndex = Z + 3
+	x.Parent = header
+	corner(x, 18)
+	x.Activated:Connect(close)
+
+	-- Sidebar tabs.
+	local sideW = if compact then 116 else 190
+	local side = frame(panel, "Tabs", COL.side, Z + 2)
+	side.Position = UDim2.fromOffset(0, 64)
+	side.Size = UDim2.new(0, sideW, 1, -64)
+	local sideList = Instance.new("UIListLayout")
+	sideList.Padding = UDim.new(0, 6)
+	sideList.SortOrder = Enum.SortOrder.LayoutOrder
+	sideList.Parent = side
+	local sidePad = Instance.new("UIPadding")
+	sidePad.PaddingTop = UDim.new(0, 14)
+	sidePad.PaddingLeft = UDim.new(0, 10)
+	sidePad.PaddingRight = UDim.new(0, 10)
+	sidePad.Parent = side
+	local sideCorner = frame(side, "Corner", COL.side, Z + 1) -- square off the top
+	sideCorner.Size = UDim2.new(1, 0, 0, 16)
+	sideCorner.Position = UDim2.fromOffset(0, -14)
+
+	-- Content.
+	local content = Instance.new("ScrollingFrame")
+	content.Name = "Content"
+	content.BackgroundTransparency = 1
+	content.BorderSizePixel = 0
+	content.Position = UDim2.fromOffset(sideW, 64)
+	content.Size = UDim2.new(1, -sideW, 1, -64)
+	content.CanvasSize = UDim2.fromOffset(0, 0)
+	content.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	content.ScrollBarThickness = 6
+	content.ScrollBarImageColor3 = COL.sub
+	content.ZIndex = Z + 2
+	content.Parent = panel
+	local contentList = Instance.new("UIListLayout")
+	contentList.Padding = UDim.new(0, 16)
+	contentList.SortOrder = Enum.SortOrder.LayoutOrder
+	contentList.Parent = content
+	local contentPad = Instance.new("UIPadding")
+	contentPad.PaddingTop = UDim.new(0, 16)
+	contentPad.PaddingLeft = UDim.new(0, 18)
+	contentPad.PaddingRight = UDim.new(0, 18)
+	contentPad.PaddingBottom = UDim.new(0, 18)
+	contentPad.Parent = content
+
+	local render
 
 	local function refresh(delay: number?)
 		task.delay(delay or 0.3, function()
-			if not closed then
-				local ok, st = pcall(function()
-					return net.Query:InvokeServer({ kind = "shop" })
-				end)
-				if ok and st and not closed then
-					render(st)
-				end
+			if closed then
+				return
+			end
+			local ok, st = pcall(function()
+				return net.Query:InvokeServer({ kind = "shop" })
+			end)
+			if ok and st and not closed then
+				state = st
+				render()
 			end
 		end)
 	end
@@ -102,139 +279,151 @@ function ShopScreen.open(gui: Instance, net)
 		refresh()
 	end
 
-	local function section(name: string, order: number, height: number)
-		local sec = Style.frame(scroll, name, nil)
-		sec.LayoutOrder = order
-		sec.Size = UDim2.new(1, -8, 0, 0)
-		sec.AutomaticSize = Enum.AutomaticSize.Y
-		sec.ZIndex = scroll.ZIndex
-		Style.column(sec, 6)
-		local h = Style.text(sec, "Header", name, 15, F.bold, Z.z200)
-		h.LayoutOrder = 0
-		h.ZIndex = scroll.ZIndex + 1
-		local grid = Style.frame(sec, "Grid", nil)
-		grid.LayoutOrder = 1
-		grid.Size = UDim2.new(1, 0, 0, 0)
-		grid.AutomaticSize = Enum.AutomaticSize.Y
-		grid.ZIndex = scroll.ZIndex
-		local g = Instance.new("UIGridLayout")
-		g.CellPadding = UDim2.fromOffset(8, 8)
-		g.CellSize = UDim2.new(0.25, -8, 0, height)
-		g.SortOrder = Enum.SortOrder.LayoutOrder
-		g.Parent = grid
-		return grid, g
+	-- Card grid inside the content area.
+	local order = 0
+	local function nextOrder()
+		order += 1
+		return order
 	end
-	local function tile(parent: Instance, order: number, highlight: Color3?)
-		local f = Style.frame(parent, "Item", Z.z800, 1)
-		f.LayoutOrder = order
-		f.ZIndex = scroll.ZIndex + 1
-		Style.corner(f, 10)
-		if highlight then
-			Style.stroke(f, highlight, 2)
-		end
-		return f
+	local function heading(s: string)
+		local h = text(content, "Heading", s, 18, F.bold, COL.text, Z + 3)
+		h.LayoutOrder = nextOrder()
+		h.TextXAlignment = Enum.TextXAlignment.Left
+		h.Size = UDim2.new(1, 0, 0, 22)
+		return h
 	end
-	local function label(parent: Instance, text: string, y: number, size: number, color: Color3, font: Font?)
-		local t = Style.text(parent, "Label", text, size, font or F.semibold, color)
-		t.AnchorPoint = Vector2.new(0.5, 0)
-		t.Position = UDim2.new(0.5, 0, 0, y)
-		t.Size = UDim2.new(1, -12, 0, 0)
-		t.AutomaticSize = Enum.AutomaticSize.Y
-		t.TextWrapped = true
-		t.ZIndex = parent.ZIndex + 1
-		return t
-	end
-	local function button(parent, text: string, enabled: boolean, onClick, color: Color3?)
-		local b = Style.button(parent, "Buy", text, 13, F.semibold)
-		b.AutomaticSize = Enum.AutomaticSize.None
-		b.AnchorPoint = Vector2.new(0.5, 1)
-		b.Position = UDim2.new(0.5, 0, 1, -8)
-		b.Size = UDim2.new(1, -16, 0, 28)
-		b.BackgroundColor3 = if enabled then (color or ACCENT) else Z.z700
-		b.BackgroundTransparency = 0
-		b.TextTransparency = if enabled then 0 else 0.4
-		b.ZIndex = parent.ZIndex + 2
-		Style.corner(b, 6)
-		if enabled then
-			b.Activated:Connect(onClick)
-		end
-		return b
-	end
-	local function preview(parent, item)
-		if item.kind == "pattern" then
-			local img = Instance.new("ImageLabel")
-			img.BackgroundTransparency = 1
-			img.Size = UDim2.fromOffset(44, 44)
-			img.AnchorPoint = Vector2.new(0.5, 0)
-			img.Position = UDim2.new(0.5, 0, 0, 10)
-			img.ImageContent = Content.fromObject(patternSwatch(item))
-			img.ZIndex = parent.ZIndex + 1
-			img.Parent = parent
-			Style.corner(img, 6)
-		elseif item.kind == "explosion" then
-			local ring = Style.frame(parent, "Blast", rgb(item.flash), 0.1)
-			ring.AnchorPoint = Vector2.new(0.5, 0)
-			ring.Position = UDim2.new(0.5, 0, 0, 10)
-			ring.Size = UDim2.fromOffset(44, 44)
-			ring.ZIndex = parent.ZIndex + 1
-			Style.corner(ring, 22)
-			Style.stroke(ring, rgb(item.ring), 4)
-		else
-			label(parent, Players.LocalPlayer.DisplayName, 20, 16, rgb(item.color), F.bold)
-		end
-	end
-	local function productButton(parent, productId: number, price: number)
-		if productId ~= 0 then
-			return button(parent, `R$ {price}`, true, function()
-				MarketplaceService:PromptProductPurchase(Players.LocalPlayer, productId)
-			end)
-		end
-		return button(parent, Lang.t("Soon"), false)
-	end
-	local function passButton(parent, pass)
-		if pass.id ~= 0 then
-			return button(parent, `R$ {pass.price}`, true, function()
-				MarketplaceService:PromptGamePassPurchase(Players.LocalPlayer, pass.id)
-			end)
-		end
-		return button(parent, Lang.t("Soon"), false)
+	local function grid(cellH: number)
+		local g = frame(content, "Grid", nil, Z + 2)
+		g.LayoutOrder = nextOrder()
+		g.Size = UDim2.new(1, 0, 0, 0)
+		g.AutomaticSize = Enum.AutomaticSize.Y
+		local l = Instance.new("UIGridLayout")
+		l.CellPadding = UDim2.fromOffset(12, 12)
+		l.CellSize = UDim2.fromOffset(if compact then 150 else 176, cellH)
+		l.SortOrder = Enum.SortOrder.LayoutOrder
+		l.Parent = g
+		return g
 	end
 
-	-- Pickers (custom colour, flag) ---------------------------------------------------
-	local function picker(titleText: string, cells: number, build: (Frame, () -> ()) -> ())
-		local _, pcard, pclose = Modal.open(gui, "Picker", 520, 130)
-		local t = Style.text(pcard, "Title", titleText, 17, F.bold, Z.z50)
+	-- A card: preview area on top, name + sub text, action button at the bottom.
+	local function card(parent: Instance, name: string, subText: string?, accent: Color3?)
+		local c = frame(parent, "Card", COL.card, Z + 3)
+		c.LayoutOrder = nextOrder()
+		corner(c, 12)
+		if accent then
+			stroke(c, accent, 2)
+		end
+		local prev = frame(c, "Preview", COL.preview, Z + 4)
+		prev.Position = UDim2.fromOffset(8, 8)
+		prev.Size = UDim2.new(1, -16, 0, 104)
+		corner(prev, 10)
+		local n = text(c, "Name", name, 15, F.bold, COL.text, Z + 4)
+		n.Position = UDim2.fromOffset(10, 118)
+		n.Size = UDim2.new(1, -20, 0, 20)
+		n.TextTruncate = Enum.TextTruncate.AtEnd
+		if subText then
+			local sLabel = text(c, "Sub", subText, 12, F.medium, COL.sub, Z + 4)
+			sLabel.Position = UDim2.fromOffset(10, 138)
+			sLabel.Size = UDim2.new(1, -20, 0, 46)
+			sLabel.TextYAlignment = Enum.TextYAlignment.Top
+		end
+		return c, prev
+	end
+	local function action(c: Frame, label: string, color: Color3, onClick: (() -> ())?)
+		local b = pill(c, label, color, Z + 5, onClick)
+		b.AnchorPoint = Vector2.new(0.5, 1)
+		b.Position = UDim2.new(0.5, 0, 1, -10)
+		b.Size = UDim2.new(1, -20, 0, 36)
+		return b
+	end
+	local function buyProduct(c: Frame, productId: number, price: number)
+		if productId == 0 then
+			return action(c, Lang.t("Soon"), COL.equipped)
+		end
+		return action(c, `R$ {price}`, COL.buy, function()
+			MarketplaceService:PromptProductPurchase(Players.LocalPlayer, productId)
+		end)
+	end
+
+	-- Previews.
+	local function previewItem(prev: Frame, item)
+		if item.kind == "pattern" then
+			prev.BackgroundColor3 = COL.ocean
+			local img = Instance.new("ImageLabel")
+			img.BackgroundTransparency = 1
+			img.AnchorPoint = Vector2.new(0.5, 0.5)
+			img.Position = UDim2.fromScale(0.5, 0.5)
+			img.Size = UDim2.fromOffset(84, 84)
+			img.ImageContent = Content.fromObject(patternSwatch(item))
+			img.ResampleMode = Enum.ResamplerMode.Pixelated
+			img.ZIndex = Z + 5
+			img.Parent = prev
+			corner(img, 10)
+			stroke(img, Color3.fromRGB(29, 78, 216), 3)
+		elseif item.kind == "explosion" then
+			prev.BackgroundColor3 = COL.ocean
+			local ring = frame(prev, "Ring", nil, Z + 5)
+			ring.AnchorPoint = Vector2.new(0.5, 0.5)
+			ring.Position = UDim2.fromScale(0.5, 0.5)
+			ring.Size = UDim2.fromOffset(84, 84)
+			corner(ring, 42)
+			stroke(ring, rgb(item.ring), 5)
+			local flash = frame(prev, "Flash", rgb(item.flash), Z + 6)
+			flash.AnchorPoint = Vector2.new(0.5, 0.5)
+			flash.Position = UDim2.fromScale(0.5, 0.5)
+			flash.Size = UDim2.fromOffset(46, 46)
+			flash.BackgroundTransparency = 0.1
+			corner(flash, 23)
+		else
+			local sample = text(prev, "Sample", Players.LocalPlayer.DisplayName, 22, F.bold, rgb(item.color), Z + 5)
+			sample.Size = UDim2.fromScale(1, 1)
+			sample.TextTruncate = Enum.TextTruncate.AtEnd
+			local s = Instance.new("UIStroke")
+			s.Color = Color3.new(0, 0, 0)
+			s.Thickness = 1.5
+			s.Parent = sample
+		end
+	end
+	local function glyph(prev: Frame, s: string, size: number, color: Color3?)
+		local g = text(prev, "Glyph", s, size, F.bold, color or COL.text, Z + 5)
+		g.Size = UDim2.fromScale(1, 1)
+		return g
+	end
+
+	-- Pickers ------------------------------------------------------------------------
+	local function picker(titleText: string, cellW: number, build: (Instance, () -> ()) -> ())
+		local _, pcard, pclose = Modal.open(gui, "Picker", math.min(560, screen.X - 40), Z + 20)
+		local t = Style.text(pcard, "Title", titleText, 18, F.bold, COL.text)
 		t.LayoutOrder = 1
 		t.ZIndex = pcard.ZIndex + 1
 		local s = Instance.new("ScrollingFrame")
 		s.BackgroundTransparency = 1
 		s.BorderSizePixel = 0
 		s.LayoutOrder = 2
-		s.Size = UDim2.new(1, 0, 0, math.min(360, gui.AbsoluteSize.Y - 160))
+		s.Size = UDim2.new(1, 0, 0, math.min(380, screen.Y - 160))
 		s.AutomaticCanvasSize = Enum.AutomaticSize.Y
 		s.CanvasSize = UDim2.fromOffset(0, 0)
 		s.ScrollBarThickness = 4
 		s.ZIndex = pcard.ZIndex + 1
 		s.Parent = pcard
 		local g = Instance.new("UIGridLayout")
-		g.CellPadding = UDim2.fromOffset(6, 6)
-		g.CellSize = UDim2.fromOffset(cells, math.floor(cells * 0.72))
+		g.CellPadding = UDim2.fromOffset(8, 8)
+		g.CellSize = UDim2.fromOffset(cellW, math.floor(cellW * 0.7))
 		g.SortOrder = Enum.SortOrder.LayoutOrder
 		g.Parent = s
 		build(s, pclose)
 	end
 	local function colorPicker(current: number?)
-		picker(Lang.t("Pick your territory colour"), 52, function(s, pclose)
+		picker(Lang.t("Pick your territory colour"), 56, function(s, pclose)
 			for i, c in Shop.COLORS do
 				local b = Instance.new("TextButton")
 				b.Text = ""
-				b.AutoButtonColor = true
 				b.BackgroundColor3 = rgb(c)
 				b.LayoutOrder = i
 				b.ZIndex = s.ZIndex + 1
 				b.Parent = s
-				Style.corner(b, 6)
-				Style.stroke(b, if i == current then Color3.new(1, 1, 1) else Z.z700, if i == current then 3 else 1)
+				corner(b, 8)
+				stroke(b, if i == current then Color3.new(1, 1, 1) else Color3.new(0, 0, 0), if i == current then 3 else 1, if i == current then 0 else 0.6)
 				b.Activated:Connect(function()
 					equip("color", i)
 					pclose()
@@ -243,15 +432,15 @@ function ShopScreen.open(gui: Instance, net)
 		end)
 	end
 	local function flagPicker(current: string?)
-		picker(Lang.t("Pick your flag"), 44, function(s, pclose)
+		picker(Lang.t("Pick your flag"), 48, function(s, pclose)
 			for i, code in FlagAtlas.codes do
 				local b = Instance.new("ImageButton")
-				b.BackgroundColor3 = Z.z800
+				b.BackgroundColor3 = COL.card
 				b.LayoutOrder = i
 				b.ZIndex = s.ZIndex + 1
 				b.Parent = s
 				FlagAtlas.apply(b :: any, code)
-				Style.stroke(b, if code == current then Color3.new(1, 1, 1) else Z.z700, if code == current then 3 else 1)
+				stroke(b, if code == current then Color3.new(1, 1, 1) else Color3.new(0, 0, 0), if code == current then 3 else 1, if code == current then 0 else 0.6)
 				b.Activated:Connect(function()
 					equip("flag", code)
 					pclose()
@@ -260,148 +449,272 @@ function ShopScreen.open(gui: Instance, net)
 		end)
 	end
 
-	-- Render ---------------------------------------------------------------------------
-	function render(state)
-		for _, c in scroll:GetChildren() do
-			if c:IsA("GuiObject") then
-				c:Destroy()
-			end
-		end
+	-- Sections -------------------------------------------------------------------------
+	local function itemGrid(kind: string)
+		local g = grid(212)
 		local perks = state.perks or {}
 		local trials = state.trials or {}
-		status.Text = if state.loaded then "Bought items are saved to your account and apply from the next match." else "Your profile is still loading…"
-		local order = 0
-		local function nextOrder()
-			order += 1
-			return order
-		end
-
-		-- Subscription.
-		if Shop.SUBSCRIPTION_ID ~= "" then
-			local grid, g = section(Lang.t("Frontlines Plus"), nextOrder(), 96)
-			g.CellSize = UDim2.new(1, -8, 0, 96)
-			local f = tile(grid, 1, GOLD)
-			local d = label(f, Lang.t("Every cosmetic, custom colour, flags and Host Pass perks while subscribed."), 10, 14, Z.z100)
-			d.Size = UDim2.new(1, -200, 0, 0)
-			d.AnchorPoint = Vector2.new(0, 0)
-			d.Position = UDim2.fromOffset(12, 12)
-			d.TextXAlignment = Enum.TextXAlignment.Left
-			local b
-			if perks.plus then
-				b = button(f, Lang.t("Active"), false)
-			else
-				b = button(f, Lang.t("Subscribe {price}/month", { price = Shop.SUBSCRIPTION_PRICE }), true, function()
-					MarketplaceService:PromptSubscriptionPurchase(Players.LocalPlayer, Shop.SUBSCRIPTION_ID)
-				end, Color3.fromRGB(202, 138, 4))
+		for _, item in Shop.items do
+			if item.kind ~= kind then
+				continue
 			end
-			b.AnchorPoint = Vector2.new(1, 0.5)
-			b.Position = UDim2.new(1, -12, 0.5, 0)
-			b.Size = UDim2.fromOffset(180, 34)
+			local slot = Shop.SLOTS[item.kind]
+			local owned = state.owned[item.id] or perks.plus
+			local trial = trials[item.id]
+			local equipped = state.equipped[slot] == item.id
+			local sub = if owned then Lang.t("Owned") elseif trial then Lang.t("Trial: {hours} left", { hours = hours(trial) }) else nil
+			local c, prev = card(g, Lang.t(item.name), sub, if equipped then COL.equip else nil)
+			previewItem(prev, item)
+			if owned or trial then
+				if equipped then
+					action(c, Lang.t("Equipped") .. " ✓", COL.equipped, function()
+						equip(slot, nil)
+					end)
+				else
+					action(c, Lang.t("Equip"), COL.equip, function()
+						equip(slot, item.id)
+					end)
+				end
+			else
+				buyProduct(c, item.productId, item.price)
+			end
 		end
+	end
 
-		-- Daily deal + free trial.
-		local specials, _ = section(Lang.t("Specials"), nextOrder(), 150)
+	local function passCard(g: Instance, key: string)
+		local pass = Shop.PASSES[key]
+		local perks = state.perks or {}
+		local has = perks[key] == true
+		local c, prev = card(g, Lang.t(pass.name), Lang.t(pass.desc), if key == "supporter" then COL.gold else nil)
+		if key == "supporter" then
+			glyph(prev, "★", 56, COL.gold)
+		elseif key == "color" then
+			local row = frame(prev, "Swatches", nil, Z + 5)
+			row.AnchorPoint = Vector2.new(0.5, 0.5)
+			row.Position = UDim2.fromScale(0.5, 0.5)
+			row.Size = UDim2.fromOffset(120, 56)
+			local l = Instance.new("UIGridLayout")
+			l.CellSize = UDim2.fromOffset(26, 26)
+			l.CellPadding = UDim2.fromOffset(4, 4)
+			l.Parent = row
+			for _, i in { 1, 3, 6, 9, 11, 13, 16, 36 } do
+				local sw = frame(row, "Swatch", rgb(Shop.COLORS[i]), Z + 6)
+				corner(sw, 6)
+			end
+		elseif key == "host" then
+			glyph(prev, "👑", 50)
+		elseif key == "flag" then
+			local f = Instance.new("ImageLabel")
+			f.BackgroundTransparency = 1
+			f.AnchorPoint = Vector2.new(0.5, 0.5)
+			f.Position = UDim2.fromScale(0.5, 0.5)
+			f.Size = UDim2.fromOffset(84, 56)
+			f.ZIndex = Z + 5
+			f.Parent = prev
+			FlagAtlas.apply(f, (state.equipped and state.equipped.flag) or "pl")
+			corner(f, 4)
+		end
+		if has and key == "color" then
+			local cur = state.equipped and state.equipped.color
+			action(c, Lang.t("Pick colour"), COL.equip, function()
+				colorPicker(cur)
+			end)
+		elseif has and key == "flag" then
+			action(c, Lang.t("Pick flag"), COL.equip, function()
+				flagPicker(state.equipped and state.equipped.flag)
+			end)
+		elseif has then
+			action(c, Lang.t("Owned") .. " ✓", COL.equipped)
+		elseif pass.id ~= 0 then
+			action(c, `R$ {pass.price}`, COL.buy, function()
+				MarketplaceService:PromptGamePassPurchase(Players.LocalPlayer, pass.id)
+			end)
+		else
+			action(c, Lang.t("Soon"), COL.equipped)
+		end
+	end
+
+	local function plusBanner()
+		if Shop.SUBSCRIPTION_ID == "" then
+			return
+		end
+		local perks = state.perks or {}
+		local b = frame(content, "Plus", COL.goldDark, Z + 3)
+		b.LayoutOrder = nextOrder()
+		b.Size = UDim2.new(1, 0, 0, if compact then 170 else 150)
+		corner(b, 14)
+		gradient(b, Color3.fromRGB(202, 138, 4), Color3.fromRGB(120, 53, 15), 20)
+		local star = text(b, "Star", "★", 64, F.bold, Color3.fromRGB(254, 240, 138), Z + 4)
+		star.Position = UDim2.fromOffset(18, 0)
+		star.Size = UDim2.fromOffset(70, 150)
+		local t = text(b, "Title", "Frontlines Plus", 26, F.bold, Color3.new(1, 1, 1), Z + 4)
+		t.TextXAlignment = Enum.TextXAlignment.Left
+		t.Position = UDim2.fromOffset(96, 18)
+		t.Size = UDim2.new(1, -300, 0, 32)
+		local d = text(b, "Perks", Lang.t("Every cosmetic, custom colour, flags and Host Pass perks while subscribed."), 14, F.medium, Color3.fromRGB(254, 243, 199), Z + 4)
+		d.TextXAlignment = Enum.TextXAlignment.Left
+		d.TextYAlignment = Enum.TextYAlignment.Top
+		d.Position = UDim2.fromOffset(96, 54)
+		d.Size = UDim2.new(1, if compact then -110 else -300, 0, 60)
+		local btn
+		if perks.plus then
+			btn = pill(b, Lang.t("Active") .. " ✓", Color3.fromRGB(120, 53, 15), Z + 5)
+		else
+			btn = pill(b, Lang.t("Subscribe {price}/month", { price = Shop.SUBSCRIPTION_PRICE }), Color3.fromRGB(17, 24, 39), Z + 5, function()
+				MarketplaceService:PromptSubscriptionPurchase(Players.LocalPlayer, Shop.SUBSCRIPTION_ID)
+			end)
+		end
+		if compact then
+			btn.AnchorPoint = Vector2.new(0, 1)
+			btn.Position = UDim2.new(0, 96, 1, -14)
+			btn.Size = UDim2.fromOffset(220, 40)
+		else
+			btn.AnchorPoint = Vector2.new(1, 0.5)
+			btn.Position = UDim2.new(1, -20, 0.5, 0)
+			btn.Size = UDim2.fromOffset(230, 46)
+		end
+	end
+
+	local function featured()
+		plusBanner()
+		heading(Lang.t("Specials"))
+		local g = grid(212)
 		local deal = state.daily and Shop.byId[state.daily]
 		if deal and Shop.DAILY_DEAL.productId ~= 0 then
-			local f = tile(specials, 1, GOLD)
-			preview(f, deal)
-			label(f, Lang.t("Deal of the day"), 58, 12, GOLD, F.bold)
-			label(f, `{Lang.t(deal.name)} · R$ {deal.price}`, 74, 12, Z.z300)
-			label(f, Lang.t("{hours} left", { hours = hours(state.dailySecondsLeft or 0) }), 90, 11, Z.z400)
-			productButton(f, Shop.DAILY_DEAL.productId, Shop.DAILY_DEAL.price)
+			local c, prev = card(g, Lang.t(deal.name), Lang.t("Deal of the day") .. " · " .. Lang.t("{hours} left", { hours = hours(state.dailySecondsLeft or 0) }), COL.gold)
+			previewItem(prev, deal)
+			local tag = text(prev, "Was", `R$ {deal.price}`, 13, F.bold, Color3.fromRGB(252, 165, 165), Z + 6)
+			tag.AnchorPoint = Vector2.new(1, 0)
+			tag.Position = UDim2.new(1, -8, 0, 6)
+			tag.Size = UDim2.fromOffset(60, 16)
+			tag.TextXAlignment = Enum.TextXAlignment.Right
+			local strike = frame(tag, "Strike", Color3.fromRGB(252, 165, 165), Z + 7)
+			strike.AnchorPoint = Vector2.new(1, 0.5)
+			strike.Position = UDim2.fromScale(1, 0.5)
+			strike.Size = UDim2.fromOffset(44, 2)
+			buyProduct(c, Shop.DAILY_DEAL.productId, Shop.DAILY_DEAL.price)
 		end
 		if Shop.AD_REWARD.productId ~= 0 and adReady then
-			local f = tile(specials, 2, GREEN)
-			label(f, Lang.t("Free trial"), 10, 14, GREEN, F.bold)
-			label(f, Lang.t("Watch a short ad and try a random cosmetic for 24 h."), 32, 12, Z.z300)
-			local b = button(f, Lang.t("Watch ad"), true, function()
+			local c, prev = card(g, Lang.t("Free trial"), Lang.t("Watch a short ad and try a random cosmetic for 24 h."), COL.buy)
+			glyph(prev, "🎁", 50)
+			local b = action(c, Lang.t("Watch ad"), COL.buy, function()
 				adReady = false
 				net.Intent:FireServer({ type = "watch_ad" })
 				refresh(8)
-			end, GREEN)
+			end)
 			pcall(function()
 				AdService:RegisterAdOpportunityAsync(b)
 			end)
 		end
-
-		-- Passes.
-		local passGrid = section(Lang.t("Passes"), nextOrder(), 150)
-		local passOrder = { "supporter", "color", "host", "flag" }
-		for i, key in passOrder do
-			local pass = Shop.PASSES[key]
-			local f = tile(passGrid, i, if key == "supporter" then GOLD else nil)
-			label(f, Lang.t(pass.name), 10, 15, if key == "supporter" then GOLD else Z.z50, F.bold)
-			label(f, Lang.t(pass.desc), 34, 12, Z.z300)
-			local has = perks[key]
-			if has and key == "color" then
-				local cur = state.equipped and state.equipped.color
-				if cur and Shop.COLORS[cur] then
-					local sw = Style.frame(f, "Current", rgb(Shop.COLORS[cur]), 0)
-					sw.AnchorPoint = Vector2.new(0.5, 1)
-					sw.Position = UDim2.new(0.5, 0, 1, -42)
-					sw.Size = UDim2.fromOffset(36, 14)
-					sw.ZIndex = f.ZIndex + 1
-					Style.corner(sw, 4)
-				end
-				button(f, Lang.t("Pick colour"), true, function()
-					colorPicker(cur)
-				end, GREEN)
-			elseif has and key == "flag" then
-				local cur = state.equipped and state.equipped.flag
-				button(f, Lang.t("Pick flag"), true, function()
-					flagPicker(cur)
-				end, GREEN)
-			elseif has then
-				button(f, Lang.t("Active"), false)
-			else
-				passButton(f, pass)
-			end
-		end
-
-		-- Bundles.
-		local bundleGrid = section(Lang.t("Bundles"), nextOrder(), 130)
-		for i, b in Shop.bundles do
-			local f = tile(bundleGrid, i, ACCENT)
-			label(f, Lang.t(b.name), 10, 15, Z.z50, F.bold)
+		for _, bundle in Shop.bundles do
 			local count, worth = 0, 0
 			for _, it in Shop.items do
-				if b.kinds[it.kind] then
+				if bundle.kinds[it.kind] then
 					count += 1
 					worth += it.price
 				end
 			end
-			label(f, Lang.t("{count} items (worth R$ {worth})", { count = count, worth = worth }), 34, 12, Z.z300)
-			productButton(f, b.productId, b.price)
-		end
-
-		-- Items by kind.
-		for _, kind in { { "pattern", "Patterns" }, { "nameColor", "Name colours" }, { "explosion", "Nuke blasts" } } do
-			local grid = section(Lang.t(kind[2]), nextOrder(), 128)
-			local i = 0
-			for _, item in Shop.items do
-				if item.kind ~= kind[1] then
-					continue
-				end
-				i += 1
-				local f = tile(grid, i)
-				preview(f, item)
-				local name = label(f, Lang.t(item.name), 62, 13, Z.z100)
-				local slot = Shop.SLOTS[item.kind]
-				local owned = state.owned[item.id] or perks.plus
-				local trial = trials[item.id]
-				if trial and not owned then
-					name.Text = `{Lang.t(item.name)} · {Lang.t("trial")} {hours(trial)}`
-				end
-				if owned or trial then
-					local equipped = state.equipped[slot] == item.id
-					button(f, if equipped then Lang.t("Equipped") else Lang.t("Equip"), true, function()
-						equip(slot, if equipped then nil else item.id)
-					end)
-				else
-					productButton(f, item.productId, item.price)
+			local c, prev = card(g, Lang.t(bundle.name), Lang.t("{count} items (worth R$ {worth})", { count = count, worth = worth }), Color3.fromRGB(129, 140, 248))
+			prev.BackgroundColor3 = COL.ocean
+			if bundle.id == "bundle_everything" then
+				glyph(prev, "💎", 54)
+				buyProduct(c, bundle.productId, bundle.price)
+				continue
+			end
+			local k = 0
+			for _, it in Shop.items do
+				if it.kind == "pattern" and k < 3 then
+					k += 1
+					local img = Instance.new("ImageLabel")
+					img.BackgroundTransparency = 1
+					img.AnchorPoint = Vector2.new(0.5, 0.5)
+					img.Position = UDim2.new(0.5, (k - 2) * 34, 0.5, (k - 2) * -6)
+					img.Size = UDim2.fromOffset(58, 58)
+					img.Rotation = (k - 2) * 8
+					img.ImageContent = Content.fromObject(patternSwatch(it))
+					img.ZIndex = Z + 5 + k
+					img.Parent = prev
+					corner(img, 8)
+					stroke(img, Color3.fromRGB(29, 78, 216), 2)
 				end
 			end
+			buyProduct(c, bundle.productId, bundle.price)
 		end
+	end
+
+	local TABS = {
+		{ id = "featured", label = "Featured", icon = "★" },
+		{ id = "passes", label = "Passes", icon = "🎟" },
+		{ id = "pattern", label = "Patterns", icon = "▦" },
+		{ id = "nameColor", label = "Name colours", icon = "Aa" },
+		{ id = "explosion", label = "Nuke blasts", icon = "💥" },
+	}
+	local tabButtons = {}
+	for i, tab in TABS do
+		local b = Instance.new("TextButton")
+		b.Name = tab.id
+		b.LayoutOrder = i
+		b.Size = UDim2.new(1, 0, 0, 42)
+		b.BackgroundColor3 = COL.tab
+		b.BackgroundTransparency = 1
+		b.AutoButtonColor = false
+		b.Text = if compact then Lang.t(tab.label) else `{tab.icon}   {Lang.t(tab.label)}`
+		b.TextXAlignment = Enum.TextXAlignment.Left
+		b.TextSize = if compact then 13 else 16
+		b.FontFace = F.semibold
+		b.TextColor3 = COL.sub
+		b.ZIndex = Z + 3
+		b.Parent = side
+		corner(b, 10)
+		local pad = Instance.new("UIPadding")
+		pad.PaddingLeft = UDim.new(0, 12)
+		pad.Parent = b
+		b.Activated:Connect(function()
+			activeTab = tab.id
+			render()
+		end)
+		tabButtons[tab.id] = b
+	end
+
+	function render()
+		if closed then
+			return
+		end
+		for id, b in tabButtons do
+			local on = id == activeTab
+			b.BackgroundTransparency = if on then 0 else 1
+			b.TextColor3 = if on then COL.text else COL.sub
+		end
+		for _, ch in content:GetChildren() do
+			if ch:IsA("GuiObject") then
+				ch:Destroy()
+			end
+		end
+		order = 0
+		if state == nil then
+			local l = text(content, "Loading", Lang.t("Loading…"), 16, F.medium, COL.sub, Z + 3)
+			l.Size = UDim2.new(1, 0, 0, 40)
+			return
+		end
+		if not state.loaded then
+			local l = text(content, "Loading", Lang.t("Your profile is still loading…"), 14, F.medium, COL.sub, Z + 3)
+			l.LayoutOrder = nextOrder()
+			l.Size = UDim2.new(1, 0, 0, 20)
+		end
+		if activeTab == "featured" then
+			featured()
+		elseif activeTab == "passes" then
+			heading(Lang.t("Passes"))
+			local g = grid(236)
+			for _, key in { "color", "host", "flag", "supporter" } do
+				passCard(g, key)
+			end
+		else
+			local label = if activeTab == "pattern" then "Patterns" elseif activeTab == "nameColor" then "Name colours" else "Nuke blasts"
+			heading(Lang.t(label))
+			itemGrid(activeTab)
+		end
+		content.CanvasPosition = Vector2.zero
 	end
 
 	local conns = {
@@ -421,12 +734,14 @@ function ShopScreen.open(gui: Instance, net)
 			refresh(2)
 		end))
 	end)
-	card.Destroying:Connect(function()
+	shade.Destroying:Connect(function()
 		closed = true
 		for _, c in conns do
 			c:Disconnect()
 		end
 	end)
+
+	render()
 	refresh(0)
 	if Shop.AD_REWARD.productId ~= 0 then
 		task.spawn(function()

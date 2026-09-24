@@ -43,7 +43,9 @@ function Matchmaking.serverKind(): (string, number?)
 	if game.PrivateServerId ~= "" then
 		for _, p in Players:GetPlayers() do
 			local data = p:GetJoinData().TeleportData
-			if type(data) == "table" and data.custom then
+			if type(data) == "table" and data.solo then
+				return "solo", tonumber(data.host)
+			elseif type(data) == "table" and data.custom then
 				return "custom", tonumber(data.host)
 			end
 		end
@@ -146,6 +148,17 @@ function Matchmaking.createPrivate(player: Player): boolean
 	return (pcall(function()
 		local code = TeleportService:ReserveServer(game.PlaceId)
 		TeleportService:TeleportToPrivateServer(game.PlaceId, code, { player }, nil, { code = code, custom = true, host = player.UserId })
+	end))
+end
+
+-- Singleplayer: a reserved server just for `player` (picks a map, starts).
+function Matchmaking.createSolo(player: Player): boolean
+	if not Matchmaking.available() then
+		return false
+	end
+	return (pcall(function()
+		local code = TeleportService:ReserveServer(game.PlaceId)
+		TeleportService:TeleportToPrivateServer(game.PlaceId, code, { player }, nil, { code = code, solo = true, host = player.UserId })
 	end))
 end
 

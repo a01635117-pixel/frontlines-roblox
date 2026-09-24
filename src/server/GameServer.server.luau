@@ -335,7 +335,7 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 	if type(intent) ~= "table" then
 		return
 	end
-	local mm = intent.type == "find_match" or intent.type == "create_private" or intent.type == "join_code"
+	local mm = intent.type == "find_match" or intent.type == "create_private" or intent.type == "join_code" or intent.type == "play_solo"
 	if mm and not allow(player, "matchmaking", 0.2, 2) then
 		return -- one teleport request per 5 s (burst 2)
 	end
@@ -343,6 +343,8 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 		Matchmaking.findMatch(player)
 	elseif intent.type == "create_private" then
 		Matchmaking.createPrivate(player)
+	elseif intent.type == "play_solo" then
+		Matchmaking.createSolo(player)
 	elseif intent.type == "join_code" and type(intent.code) == "string" and #intent.code <= 12 then
 		local ok = Matchmaking.joinByCode(player, intent.code)
 		if not ok then
@@ -363,12 +365,8 @@ local voteConn = Net.Intent.OnServerEvent:Connect(function(player: Player, inten
 		if not (type(value) == "string" and mapInfo(value) and ServerStorage.Maps:FindFirstChild(value)) then
 			return
 		end
-	elseif kind == "mode" then
-		if not isValidMode(value) then
-			return
-		end
 	else
-		return
+		return -- only the map is voted on
 	end
 	-- Clicking your current vote again withdraws it.
 	local votes = lobby.votes[kind]
@@ -391,6 +389,9 @@ local lobbyConn = Net.Intent.OnServerEvent:Connect(function(player: Player, inte
 		return
 	end
 	if intent.type == "lobby_set" and type(intent.key) == "string" then
+		if lobby.mode == "solo" and intent.key ~= "map" then
+			return -- singleplayer: pick the map, everything else stays default
+		end
 		if not BASIC_SETTINGS[intent.key] and not hostAdvanced(player.UserId) then
 			Net.Event:FireClient(player, { type = "NeedHostPass" })
 			return
@@ -439,7 +440,7 @@ if lobby.mode == "public" then
 	local rng = Random.new()
 	st0.mode = if rng:NextNumber() < 0.25 then rng:NextInteger(2, 4) else "ffa"
 	lobby.defaults.map, lobby.defaults.mode = st0.map, st0.mode
-elseif Matchmaking.accessCode then
+elseif Matchmaking.accessCode and lobby.mode ~= "solo" then
 	-- Private match: friends join with this code from any lobby.
 	lobby.joinCode = Matchmaking.registerJoinCode()
 end
@@ -624,7 +625,10 @@ local function fullState(forPlayer: Player)
 		spawnPhaseTurns = mg:config():numSpawnPhaseTurns(),
 		-- Singleplayer has no spawn timer (upstream GameRunner.init).
 		hasSpawnTimer = mg:config():gameConfig().gameType ~= "Singleplayer",
-		canMatchmake = Matchmaking.available() and lobby.mode == "public",
+		-- "Play again" after dying / at the end: every server kind can send
+		-- players on (singleplayer to a new solo game, the rest to a match).
+		canMatchmake = Matchmaking.available(),
+		lobbyMode = lobby.mode,
 		randomSpawn = mg:config():isRandomSpawn(),
 		alliancesDisabled = mg:config():disableAlliances(),
 		yourClientID = clientIDOf(forPlayer),

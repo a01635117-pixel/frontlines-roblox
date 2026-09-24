@@ -242,6 +242,7 @@ local function myStats()
 end
 
 local myInfo = { disabled = state.disabledUnits or {} } -- latest Net.Me payload
+local playAgain: () -> () -- defined with the event handlers below
 
 -- Launcher vs local player (NukeTelegraphs.classifyOwner): 0 = self,
 -- 1 = teammate or ally, 2 = everyone else (and everything when spectating).
@@ -752,9 +753,7 @@ Net.Stats.OnClientEvent:Connect(function(buf)
 			myInfo.alliances, myInfo.requestsIn, myInfo.targets, myInfo.embargoes = {}, {}, {}, {}
 			refreshNameIcons()
 			if state.canMatchmake then
-				hud:showModal("You died", "Spectate", false, "Find new match", function()
-					Net.Intent:FireServer({ type = "find_match" })
-				end)
+				hud:showModal("You died", "Spectate", false, "Play again", playAgain)
 			else
 				hud:showModal("You died", "Spectate")
 			end
@@ -763,6 +762,12 @@ Net.Stats.OnClientEvent:Connect(function(buf)
 	refreshPanelVisibility()
 	refreshBoard()
 end)
+
+-- "Play again": straight to the next match that is about to start (or a
+-- fresh singleplayer game when this one was singleplayer).
+function playAgain()
+	Net.Intent:FireServer({ type = if state.lobbyMode == "solo" then "play_solo" else "find_match" })
+end
 
 Net.Event.OnClientEvent:Connect(function(evt)
 	if evt.type == "SpawnPhaseEnd" then
@@ -859,12 +864,14 @@ Net.Event.OnClientEvent:Connect(function(evt)
 	elseif evt.type == "Win" then
 		gameOver = true
 		local myTeam = mySmallID and roster[mySmallID] and roster[mySmallID].team
+		local again = if state.canMatchmake then "Play again" else nil
+		local againFn = if state.canMatchmake then playAgain else nil
 		if evt.winnerSmallID ~= nil and evt.winnerSmallID == mySmallID then
-			hud:showModal("You Won!", "OK", true)
+			hud:showModal("You Won!", "OK", true, again, againFn)
 		elseif evt.winnerSmallID == nil and myTeam ~= nil and evt.winnerName == myTeam then
-			hud:showModal("Your team won!", "OK", true)
+			hud:showModal("Your team won!", "OK", true, again, againFn)
 		else
-			hud:showModal(Lang.t("{name} has won!", { name = evt.winnerName }), "OK")
+			hud:showModal(Lang.t("{name} has won!", { name = evt.winnerName }), "OK", false, again, againFn)
 		end
 	end
 end)

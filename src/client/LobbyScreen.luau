@@ -231,6 +231,28 @@ function LobbyScreen:_promptHostPass()
 	end
 end
 
+-- Switch between singleplayer (own server) and the public multiplayer lobby.
+function LobbyScreen:_choosePlay(which: string)
+	local st = self.state
+	if st == nil then
+		return
+	end
+	local current = if st.mode == "solo" then "solo" else "multi"
+	if which == current then
+		return
+	end
+	if st.canMatchmake ~= true then
+		self.notice = Lang.t("Available in the published game.")
+	elseif which == "solo" then
+		self.notice = Lang.t("Creating your singleplayer game…")
+		self.net.Intent:FireServer({ type = "play_solo" })
+	else
+		self.notice = Lang.t("Finding a match…")
+		self.net.Intent:FireServer({ type = "find_match" })
+	end
+	self:_refresh()
+end
+
 function LobbyScreen:isHost(): boolean
 	return self.state ~= nil and self.state.hostUserId == Players.LocalPlayer.UserId
 end
@@ -284,6 +306,8 @@ function LobbyScreen:_section(title: string, order: number): Frame
 	h.ZIndex = 83
 	self.sectionHeaders = self.sectionHeaders or {}
 	self.sectionHeaders[title] = { label = h, base = h.Text }
+	self.sectionFrames = self.sectionFrames or {}
+	self.sectionFrames[title] = sec
 	return sec
 end
 
@@ -385,7 +409,18 @@ function LobbyScreen:_build()
 
 	-- Game mode (upstream GameMode + team count).
 	local modeSec = self:_section("Mode", 2)
+	-- Public and singleplayer lobbies: just Singleplayer / Multiplayer.
+	local prow = wrapRow(modeSec, "PlayRow", 0)
+	controls.playRow = prow
+	controls.play = {}
+	for i, choice in { { "solo", "Singleplayer" }, { "multi", "Multiplayer" } } do
+		local _, stroke = chip(prow, choice[2], i, function()
+			self:_choosePlay(choice[1])
+		end)
+		controls.play[choice[1]] = stroke
+	end
 	local mrow = wrapRow(modeSec, "Row", 1)
+	controls.modeRow = mrow
 	controls.mode = {}
 	controls.modeVotes = {}
 	for i, m in MODES do
@@ -619,15 +654,33 @@ function LobbyScreen:_refresh()
 		hostName = hp.DisplayName
 	end
 	local public = st.mode == "public"
-	self.title.Text = if public then "Next match" else "Game Settings"
-	if public then
+	local solo = st.mode == "solo"
+	local simple = public or solo
+	-- Public / singleplayer: only the map and Singleplayer-Multiplayer.
+	c.playRow.Visible = simple
+	c.modeRow.Visible = not simple
+	mark(c.play.solo, solo)
+	mark(c.play.multi, public)
+	for title, sec in self.sectionFrames or {} do
+		if title ~= "Map" and title ~= "Mode" and title ~= "Players" then
+			sec.Visible = not simple
+		end
+	end
+	if self.sectionFrames and self.sectionFrames.Mode then
+		-- The Singleplayer / Multiplayer switch goes first, above the maps.
+		self.sectionFrames.Mode.LayoutOrder = if simple then 0 else 2
+	end
+	self.title.Text = if public then "Multiplayer" elseif solo then "Singleplayer" else "Game Settings"
+	if solo then
+		self.hostLabel.Text = Lang.t("Pick a map and start — you against the nations and bots.")
+	elseif public then
 		local name = s.map
 		for _, m in MapCatalog do
 			if m.id == s.map then
 				name = m.name
 			end
 		end
-		self.hostLabel.Text = Lang.t("Vote for the map and mode by clicking them — the most votes win. Leading: {map}.", { map = Lang.t(name) })
+		self.hostLabel.Text = Lang.t("Vote for the map by clicking it — the most votes win. Leading: {map}.", { map = Lang.t(name) })
 	elseif st.joinCode then
 		self.hostLabel.Text = (if host then Lang.t("You are the host. ") else Lang.t("Host: {hostName}. ", { hostName = hostName })) .. Lang.t("Friends join with code {code}.", { code = st.joinCode })
 	else
@@ -647,7 +700,7 @@ function LobbyScreen:_refresh()
 	self.codeBox.Visible = mm and public
 	self.joinButton.Visible = mm and public
 	self.privateButton.Visible = mm and public
-	self.inviteButton.Visible = not public
+	self.inviteButton.Visible = not simple
 end
 
 return LobbyScreen

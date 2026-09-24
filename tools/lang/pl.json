@@ -281,5 +281,17 @@
   "Plasma blast": "Wybuch plazmy",
   "Toxic blast": "Toksyczny wybuch",
   "Void blast": "Wybuch pustki",
-  "Solar blast": "Słoneczny wybuch"
+  "Solar blast": "Słoneczny wybuch",
+  "Singleplayer": "Jeden gracz",
+  "Multiplayer": "Wielu graczy",
+  "Available in the published game.": "Dostępne w opublikowanej grze.",
+  "Creating your singleplayer game…": "Tworzę grę dla jednego gracza…",
+  "Finding a match…": "Szukam meczu…",
+  "Pick a map and start — you against the nations and bots.": "Wybierz mapę i zacznij – Ty przeciwko narodom i botom.",
+  "Vote for the map by clicking it — the most votes win. Leading: {map}.": "Kliknij mapę, aby na nią zagłosować – wygrywa najwięcej głosów. Prowadzi: {map}.",
+  "Cosmetics only — no pay-to-win": "Tylko kosmetyki – bez pay-to-win",
+  "Owned": "Posiadane",
+  "Trial: {hours} left": "Próba: zostało {hours}",
+  "Featured": "Polecane",
+  "Play again": "Zagraj ponownie"
 }
