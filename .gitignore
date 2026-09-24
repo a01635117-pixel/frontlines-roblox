@@ -4,3 +4,4 @@ tools/node_modules/
 *.rbxlx.lock
 .DS_Store
 tools/soak/AutoPlay.rbxmx
+promo/*.mp4
