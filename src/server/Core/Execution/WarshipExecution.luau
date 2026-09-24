@@ -141,7 +141,11 @@ function MoveWarshipExecution:init(mg, _ticks: number)
 			continue
 		end
 		warship:updateWarshipState({ patrolTile = self.position })
-		warship:setTargetTile(nil)
+		-- Roblox port: sail to the clicked tile itself first (upstream only moves
+		-- the patrol area, so the ship wandered to a random tile nearby and
+		-- players felt it ignored orders); patrol around it after arriving.
+		warship:setTargetTile(self.position)
+		warship._manualMove = true
 	end
 end
 
@@ -246,8 +250,8 @@ function WarshipExecution:tick(_ticks: number)
 		self:_patrol()
 		return
 	end
-	-- Priority 3: hunt trade ships.
-	if ttype == UnitType.TradeShip then
+	-- Priority 3: hunt trade ships (not while following a player order).
+	if ttype == UnitType.TradeShip and not warship._manualMove then
 		self:_huntDownTradeShip()
 		return
 	end
@@ -701,6 +705,7 @@ function WarshipExecution:_patrol()
 	local result = self.pathfinder:next(warship:tile(), warship:targetTile())
 	if result.status == PathStatus.COMPLETE then
 		warship:setTargetTile(nil)
+		warship._manualMove = nil
 		warship:move(result.node)
 	elseif result.status == PathStatus.NEXT then
 		warship:move(result.node)
@@ -709,12 +714,14 @@ function WarshipExecution:_patrol()
 		local second = self.pathfinder:next(warship:tile(), warship:targetTile())
 		if second.status == PathStatus.COMPLETE then
 			warship:setTargetTile(nil)
+			warship._manualMove = nil
 			warship:move(second.node)
 		elseif second.status == PathStatus.NEXT then
 			warship:move(second.node)
 		end
 	elseif result.status == PathStatus.NOT_FOUND then
 		warship:setTargetTile(nil)
+		warship._manualMove = nil
 	end
 end
 
