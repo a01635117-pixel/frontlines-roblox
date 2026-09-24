@@ -53,6 +53,20 @@ license:
 - `art/` — store icon and thumbnails (`tools/make-art.mjs`), rendered from
   `resources/maps` terrain and nation data
 
+## Sound effects — CC BY-SA 4.0
+
+The sound effects played by `src/client/Audio.luau` are OpenFrontIO's
+`resources/sounds/effects/*.mp3` (CC BY-SA 4.0, attribution: **OpenFront**),
+uploaded unmodified as Roblox audio assets (IDs listed in `Audio.luau`). The
+promo videos in `promo/` use the same effects and are distributed under the
+same license.
+
+## Music
+
+The in-game music is **not** from OpenFront (its music is proprietary): the
+tracks are from the APM Music library that Roblox licenses for use in Roblox
+experiences (asset IDs and titles in `src/client/Audio.luau`).
+
 ## Not used
 
 Nothing from OpenFrontIO's `proprietary/` directory (logos, fonts, sounds,

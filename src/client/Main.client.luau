@@ -16,13 +16,14 @@ local Shop = require(Shared:WaitForChild("Data"):WaitForChild("Shop"))
 -- PlayerScripts are copied one by one: wait for every client module before
 -- requiring any (modules require their siblings without WaitForChild).
 -- tools/build.mjs checks this list against src/client.
-local CLIENT_MODULES = { "ShopScreen", "AttacksDisplay", "BuildMenu", "ChatModal", "ControlPanel", "EmojiTable", "EventsDisplay", "FlagAtlas", "Hud", "Icons", "Lang", "LobbyScreen", "MapCamera", "Modal", "NameLayer", "NukePreview", "PlayerPanel", "RadialMenu", "SendResourceModal", "SpawnRing", "Sprites", "Style", "TerritoryRenderer", "TutorialPanel", "UnitLayer", "WorldText" }
+local CLIENT_MODULES = { "ShopScreen", "Audio", "AttacksDisplay", "BuildMenu", "ChatModal", "ControlPanel", "EmojiTable", "EventsDisplay", "FlagAtlas", "Hud", "Icons", "Lang", "LobbyScreen", "MapCamera", "Modal", "NameLayer", "NukePreview", "PlayerPanel", "RadialMenu", "SendResourceModal", "SpawnRing", "Sprites", "Style", "TerritoryRenderer", "TutorialPanel", "UnitLayer", "WorldText" }
 for _, name in CLIENT_MODULES do
 	script.Parent:WaitForChild(name)
 end
 
 local Lang = require(script.Parent:WaitForChild("Lang"))
 Lang.init() -- before any GUI exists, so auto-localisation sees every label
+local Audio = require(script.Parent:WaitForChild("Audio"))
 local AttacksDisplay = require(script.Parent:WaitForChild("AttacksDisplay"))
 local BuildMenu = require(script.Parent:WaitForChild("BuildMenu"))
 local ControlPanel = require(script.Parent:WaitForChild("ControlPanel"))
@@ -69,6 +70,8 @@ background.BorderSizePixel = 0
 background.Parent = gui
 
 local hud = Hud.new(gui)
+Audio.button(gui, game:GetService("GuiService"):GetGuiInset().Y + 8)
+Audio.startMusic()
 hud:setCountdown("…", "Waiting for the match to start")
 local controlPanel = ControlPanel.new(gui)
 gui.Parent = player:WaitForChild("PlayerGui")
@@ -191,7 +194,10 @@ renderer:loadState(Net.unwrap(state.tiles))
 Net.unpackNames(state.names, function(smallID, x, y, size)
 	nameLayer:setPlacement(smallID, x, y, size)
 end)
+-- Units already in the match when we joined: no build/launch cues for them.
+local seenUnits = {}
 for _, u in state.units or {} do
+	seenUnits[u.id] = true
 	unitLayer:apply(u)
 end
 
@@ -622,8 +628,49 @@ Net.Names.OnClientEvent:Connect(function(buf)
 	end)
 end)
 
+-- SoundEffectController: launches for everyone, our own builds, detonations.
+local LAUNCH_CUE = { ["Atom Bomb"] = "atom-launch", ["Hydrogen Bomb"] = "hydrogen-launch", MIRV = "mirv-launch" }
+local BUILD_CUE = {
+	City = "build-city",
+	Port = "build-port",
+	["Defense Post"] = "build-defense-post",
+	["SAM Launcher"] = "sam-built",
+	["Missile Silo"] = "silo-built",
+	Factory = "build-factory",
+	Warship = "build-warship",
+	Transport = "transport-ship",
+}
+local function unitSound(u)
+	if u.isActive then
+		if seenUnits[u.id] then
+			return
+		end
+		seenUnits[u.id] = true
+		local cue = LAUNCH_CUE[u.unitType]
+		if cue == nil and u.ownerID == mySmallID then
+			cue = BUILD_CUE[u.unitType]
+		end
+		if cue then
+			Audio.play(cue)
+		end
+		return
+	end
+	seenUnits[u.id] = nil
+	if u.reachedTarget then
+		if u.unitType == "Atom Bomb" then
+			Audio.play("atom-hit")
+		elseif u.unitType == "Hydrogen Bomb" then
+			Audio.play("hydrogen-hit")
+		elseif u.unitType == "MIRV Warhead" then
+			-- Hundreds of warheads: at most one boom per half second.
+			Audio.play("atom-hit", 0.5)
+		end
+	end
+end
+
 Net.Units.OnClientEvent:Connect(function(list)
 	for _, u in list do
+		unitSound(u)
 		unitLayer:apply(u)
 	end
 end)
@@ -752,6 +799,7 @@ Net.Stats.OnClientEvent:Connect(function(buf)
 			-- alliances): forget our diplomatic state so no stale icons remain.
 			myInfo.alliances, myInfo.requestsIn, myInfo.targets, myInfo.embargoes = {}, {}, {}, {}
 			refreshNameIcons()
+			Audio.play("defeat")
 			if state.canMatchmake then
 				hud:showModal("You died", "Spectate", false, "Play again", playAgain)
 			else
@@ -769,8 +817,19 @@ function playAgain()
 	Net.Intent:FireServer({ type = if state.lobbyMode == "solo" then "play_solo" else "find_match" })
 end
 
+-- MessageType values (EventsDisplay.MT) that carry a cue.
+local MESSAGE_CUE = {
+	[4] = "nuke-warning", -- MIRV_INBOUND
+	[5] = "nuke-warning", -- NUKE_INBOUND
+	[7] = "nuke-warning", -- HYDROGEN_BOMB_INBOUND
+	[13] = "alliance-accepted",
+	[14] = "alliance-declined",
+	[16] = "alliance-broken",
+}
+
 Net.Event.OnClientEvent:Connect(function(evt)
 	if evt.type == "SpawnPhaseEnd" then
+		Audio.play("game-start")
 		inSpawnPhase = false
 		buildMenu:refresh()
 		refreshPanelVisibility()
@@ -784,6 +843,7 @@ Net.Event.OnClientEvent:Connect(function(evt)
 		fresh.Parent = script.Parent
 		script:Destroy()
 	elseif evt.type == "AllianceRequest" then
+		Audio.play("alliance-suggested")
 		eventsDisplay:allianceRequest(evt.requestor, evt.duration)
 	elseif evt.type == "AllianceRequestResolved" then
 		eventsDisplay:allianceRequestResolved(evt.requestor)
@@ -803,6 +863,9 @@ Net.Event.OnClientEvent:Connect(function(evt)
 		refreshNameIcons()
 		task.delay(EMOJI_DURATION / 10 + 0.2, refreshNameIcons)
 	elseif evt.type == "Chat" then
+		if evt.isFrom then
+			Audio.play("message")
+		end
 		-- DisplayChatEvent: "From X: msg" / "Sent X: msg".
 		local text = ChatModal.phraseText(evt.category, evt.key) or evt.key
 		if evt.target then
@@ -850,10 +913,18 @@ Net.Event.OnClientEvent:Connect(function(evt)
 	elseif evt.type == "GoldGain" then
 		controlPanel:goldGain(evt.gold)
 	elseif evt.type == "Message" or evt.type == "Incoming" then
+		local cue = MESSAGE_CUE[evt.messageType]
+		if cue then
+			-- Several nukes announced together: one alarm (NUKE_WARNING interval).
+			Audio.play(cue, if cue == "nuke-warning" then 1 else nil)
+		end
 		eventsDisplay:add(evt)
 	elseif evt.type == "Conquest" then
 		-- Conquest popup at the conquered player's name (our conquests only).
 		if evt.conqueror == mySmallID then
+			-- Battle cue for a real player, the payout cue for bots and nations.
+			local conquered = roster[evt.conquered]
+			Audio.play(if conquered and conquered.type == "HUMAN" then "conquered" else "ka-ching")
 			local x, y = nameLayer:placement(evt.conquered)
 			if x then
 				worldText:conquest(x, y, evt.gold or 0)
@@ -866,6 +937,11 @@ Net.Event.OnClientEvent:Connect(function(evt)
 		local myTeam = mySmallID and roster[mySmallID] and roster[mySmallID].team
 		local again = if state.canMatchmake then "Play again" else nil
 		local againFn = if state.canMatchmake then playAgain else nil
+		local won = (evt.winnerSmallID ~= nil and evt.winnerSmallID == mySmallID)
+			or (evt.winnerSmallID == nil and myTeam ~= nil and evt.winnerName == myTeam)
+		if not shownDeath then
+			Audio.play(if won then "victory" else "defeat")
+		end
 		if evt.winnerSmallID ~= nil and evt.winnerSmallID == mySmallID then
 			hud:showModal("You Won!", "OK", true, again, againFn)
 		elseif evt.winnerSmallID == nil and myTeam ~= nil and evt.winnerName == myTeam then
@@ -899,6 +975,7 @@ camera.onClick = function(p: Vector2)
 	if inSpawnPhase then
 		-- Random spawn: the server places us; no manual pick (upstream disables it).
 		if not state.randomSpawn and gameMap:isLand(tile) and not gameMap:isImpassable(tile) and renderer:ownerAt(tile) == 0 then
+			Audio.play("spawn")
 			Net.Intent:FireServer({ type = "spawn", tile = tile })
 		end
 		return

@@ -5,21 +5,21 @@ Game link: https://www.roblox.com/games/82985206341847
 ## Video 1 — world timelapse (EN) · frontlines-en-1.mp4
 
 **Caption:** 300 empires start on one world map. Only one survives. Which one would you be? 🌍⚔️
-Play FRONTLINES free on Roblox — link in bio.
+Search FRONTLINES on Roblox — free to play 🌍
 
 **Hashtags:** #roblox #robloxgames #strategy #mapgame #worldmap #ww3 #geography #openfront #frontlines #gaming
 
 ## Video 2 — world timelapse (PL) · frontlines-pl-1.mp4
 
 **Opis:** 300 państw startuje na jednej mapie świata. Przetrwa tylko jedno. Kim byś był? 🌍⚔️
-Zagraj we FRONTLINES za darmo na Robloxie — link w bio.
+Wpisz FRONTLINES na Robloxie — gra za darmo 🌍
 
 **Hashtagi:** #roblox #robloxpolska #gry #strategia #mapaświata #geografia #frontlines #dlaciebie #fyp
 
 ## Video 3 — nukes (EN) · frontlines-en-nukes.mp4
 
 **Caption:** When the nukes start flying 💥 Build silos, shoot them down with SAMs… or betray your ally at the perfect moment.
-FRONTLINES on Roblox — link in bio.
+Search FRONTLINES on Roblox 🌍
 
 **Hashtags:** #roblox #robloxgames #nuke #strategy #worldmap #ww3 #frontlines #gaming #fyp
 

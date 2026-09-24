@@ -18,6 +18,7 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local Format = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Format"))
+local Audio = require(script.Parent.Audio)
 local Icons = require(script.Parent.Icons)
 local Style = require(script.Parent.Style)
 
@@ -576,6 +577,7 @@ function RadialMenu:_click(p: Vector2)
 		local info = self.info
 		if info.inSpawnPhase then
 			if info.ownerSmallID == 0 then
+				Audio.play("spawn")
 				self.deps.net.Intent:FireServer({ type = "spawn", tile = self.tile })
 				self:close()
 			end
@@ -596,6 +598,7 @@ function RadialMenu:_click(p: Vector2)
 		self:close()
 		return
 	end
+	Audio.play("click")
 	local item = seg.item
 	if item.disabled then
 		return
