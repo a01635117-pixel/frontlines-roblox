@@ -62,7 +62,7 @@ local LobbyScreen = {}
 LobbyScreen.__index = LobbyScreen
 
 function LobbyScreen.new(gui: ScreenGui, net)
-	local self = setmetatable({ net = net, state = nil, controls = {} }, LobbyScreen)
+	local self = setmetatable({ net = net, state = nil, controls = {}, myVote = {} }, LobbyScreen)
 
 	local shade = Style.frame(gui, "Lobby", Color3.new(0, 0, 0), 0.55)
 	shade.Size = UDim2.fromScale(1, 1)
@@ -226,9 +226,35 @@ function LobbyScreen:destroy()
 end
 
 function LobbyScreen:_set(key: string, value)
-	if self:isHost() then
+	if self.state and self.state.mode == "public" then
+		-- Public lobby: a click is a vote (again on the same option withdraws it).
+		if key == "map" or key == "mode" then
+			self.myVote[key] = if self.myVote[key] == value then nil else value
+			self.net.Intent:FireServer({ type = "lobby_vote", kind = key, value = value })
+			self:_refresh()
+		end
+	elseif self:isHost() then
 		self.net.Intent:FireServer({ type = "lobby_set", key = key, value = value })
 	end
+end
+
+-- Vote count badge in a card's top-right corner.
+local function voteBadge(parent: Instance)
+	local b = Style.text(parent, "Votes", "", 12, F.bold, Color3.new(1, 1, 1))
+	b.AnchorPoint = Vector2.new(1, 0)
+	b.Position = UDim2.new(1, -4, 0, 4)
+	b.BackgroundColor3 = C.malibuBlue
+	b.BackgroundTransparency = 0
+	b.ZIndex = 86
+	b.Visible = false
+	Style.corner(b, 8)
+	Style.padding(b, 6, 1)
+	return b
+end
+local function paintBadge(b: TextLabel, n: number?, mine: boolean)
+	b.Visible = (n or 0) > 0
+	b.Text = tostring(n or 0)
+	b.BackgroundColor3 = if mine then Color3.fromRGB(34, 197, 94) else C.malibuBlue
 end
 
 -- Sections ------------------------------------------------------------------------
@@ -303,6 +329,7 @@ function LobbyScreen:_build()
 		return a.name < b.name
 	end)
 	controls.maps = {}
+	controls.mapVotes = {}
 	for i, entry in sorted do
 		local card = Instance.new("TextButton")
 		card.Name = entry.id
@@ -337,17 +364,20 @@ function LobbyScreen:_build()
 			self:_set("map", entry.id)
 		end)
 		controls.maps[entry.id] = stroke
+		controls.mapVotes[entry.id] = voteBadge(card)
 	end
 
 	-- Game mode (upstream GameMode + team count).
 	local modeSec = self:_section("Mode", 2)
 	local mrow = wrapRow(modeSec, "Row", 1)
 	controls.mode = {}
+	controls.modeVotes = {}
 	for i, m in MODES do
-		local _, stroke = chip(mrow, m.label, i, function()
+		local button, stroke = chip(mrow, m.label, i, function()
 			self:_set("mode", m.value)
 		end)
 		controls.mode[tostring(m.value)] = stroke
+		controls.modeVotes[tostring(m.value)] = voteBadge(button)
 	end
 
 	-- Difficulty.
@@ -535,6 +565,13 @@ function LobbyScreen:_refresh()
 	for v, stroke in c.mode do
 		mark(stroke, v == tostring(s.mode or "ffa"))
 	end
+	local votes = st.votes or { map = {}, mode = {} }
+	for id, b in c.mapVotes do
+		paintBadge(b, votes.map[id], self.myVote.map == id)
+	end
+	for v, b in c.modeVotes do
+		paintBadge(b, votes.mode[v], self.myVote.mode ~= nil and tostring(self.myVote.mode) == v)
+	end
 	for d, stroke in c.difficulty do
 		mark(stroke, d == s.difficulty)
 	end
@@ -568,7 +605,13 @@ function LobbyScreen:_refresh()
 	local public = st.mode == "public"
 	self.title.Text = if public then "Next match" else "Game Settings"
 	if public then
-		self.hostLabel.Text = Lang.t("Public match on {map} — join with friends, the map rotates every match.", { map = s.map })
+		local name = s.map
+		for _, m in MapCatalog do
+			if m.id == s.map then
+				name = m.name
+			end
+		end
+		self.hostLabel.Text = Lang.t("Vote for the map and mode by clicking them — the most votes win. Leading: {map}.", { map = Lang.t(name) })
 	elseif st.joinCode then
 		self.hostLabel.Text = (if host then Lang.t("You are the host. ") else Lang.t("Host: {hostName}. ", { hostName = hostName })) .. Lang.t("Friends join with code {code}.", { code = st.joinCode })
 	else

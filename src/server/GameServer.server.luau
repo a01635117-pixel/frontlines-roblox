@@ -145,6 +145,10 @@ local lobby = {
 	-- private-match servers, and Studio for testing).
 	mode = "custom",
 	joinCode = nil :: string?,
+	-- Public lobbies: every player votes for a map and a mode (userId -> value);
+	-- the most voted wins, the rotation pick stands when nobody votes.
+	votes = { map = {}, mode = {} },
+	defaults = { map = "World", mode = "ffa" :: any },
 }
 
 -- Public lobbies rotate maps by their playlist frequency (MapCatalog).
@@ -193,6 +197,57 @@ local function pickHost()
 	lobby.hostUserId = if first then first.UserId else nil
 end
 
+local function isValidMode(value): boolean
+	return value == "ffa" or value == "Duos" or value == "Trios" or value == "Quads" or value == "Humans Vs Nations" or (type(value) == "number" and value >= 2 and value <= 7 and value % 1 == 0)
+end
+
+-- Vote counts per option (keys as strings, as clients index them).
+local function tally(kind: string): { [string]: number }
+	local out = {}
+	for _, v in lobby.votes[kind] do
+		local k = tostring(v)
+		out[k] = (out[k] or 0) + 1
+	end
+	return out
+end
+
+-- The winning option: most votes; a tie keeps the current pick if it is
+-- among the leaders, else the first leader in catalog / mode order.
+local function leader(kind: string, current, order: { any })
+	local counts = tally(kind)
+	local best = 0
+	for _, n in counts do
+		best = math.max(best, n)
+	end
+	if best == 0 then
+		return nil
+	end
+	if counts[tostring(current)] == best then
+		return current
+	end
+	for _, v in order do
+		if counts[tostring(v)] == best then
+			return v
+		end
+	end
+	return nil
+end
+
+local MODE_ORDER = { "ffa", 2, 3, 4, 5, 6, 7, "Duos", "Trios", "Quads", "Humans Vs Nations" }
+local function applyVotes()
+	local st = lobby.settings
+	local mapOrder = {}
+	for _, m in MapCatalog do
+		table.insert(mapOrder, m.id)
+	end
+	local map = leader("map", st.map, mapOrder) or lobby.defaults.map
+	if map ~= st.map then
+		st.map = map
+		st.nations = mapInfo(map).nations
+	end
+	st.mode = leader("mode", st.mode, MODE_ORDER) or lobby.defaults.mode
+end
+
 local function lobbyState()
 	local names = {}
 	for _, p in Players:GetPlayers() do
@@ -206,6 +261,7 @@ local function lobbyState()
 		mode = lobby.mode,
 		joinCode = lobby.joinCode,
 		canMatchmake = Matchmaking.available(),
+		votes = if lobby.mode == "public" then { map = tally("map"), mode = tally("mode") } else nil,
 	}
 end
 
@@ -223,7 +279,7 @@ local function setLobbySetting(key: string, value: any)
 			st.nations = mapInfo(value).nations
 		end
 	elseif key == "mode" then
-		if value == "ffa" or value == "Duos" or value == "Trios" or value == "Quads" or value == "Humans Vs Nations" or (type(value) == "number" and value >= 2 and value <= 7 and value % 1 == 0) then
+		if isValidMode(value) then
 			st.mode = value
 		end
 	elseif key == "difficulty" then
@@ -280,6 +336,31 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 	end
 end)
 
+local voteConn = Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
+	if lobby.started or lobby.mode ~= "public" or type(intent) ~= "table" or intent.type ~= "lobby_vote" then
+		return
+	end
+	if not allow(player, "vote", 4, 8) then
+		return
+	end
+	local kind, value = intent.kind, intent.value
+	if kind == "map" then
+		if not (type(value) == "string" and mapInfo(value) and ServerStorage.Maps:FindFirstChild(value)) then
+			return
+		end
+	elseif kind == "mode" then
+		if not isValidMode(value) then
+			return
+		end
+	else
+		return
+	end
+	-- Clicking your current vote again withdraws it.
+	local votes = lobby.votes[kind]
+	votes[player.UserId] = if votes[player.UserId] == value then nil else value
+	applyVotes()
+	broadcastLobby()
+end)
 local lobbyConn = Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 	if lobby.started or type(intent) ~= "table" or player.UserId ~= lobby.hostUserId then
 		return
@@ -295,8 +376,13 @@ local joinConn = Players.PlayerAdded:Connect(function()
 	pickHost()
 	broadcastLobby()
 end)
-local leaveConn = Players.PlayerRemoving:Connect(function()
+local leaveConn = Players.PlayerRemoving:Connect(function(player)
+	lobby.votes.map[player.UserId] = nil
+	lobby.votes.mode[player.UserId] = nil
 	task.defer(function()
+		if lobby.mode == "public" then
+			applyVotes()
+		end
 		pickHost()
 		broadcastLobby()
 	end)
@@ -320,6 +406,7 @@ if lobby.mode == "public" then
 	-- Every fourth public match or so is a team game (2-4 teams).
 	local rng = Random.new()
 	st0.mode = if rng:NextNumber() < 0.25 then rng:NextInteger(2, 4) else "ffa"
+	lobby.defaults.map, lobby.defaults.mode = st0.map, st0.mode
 elseif Matchmaking.accessCode then
 	-- Private match: friends join with this code from any lobby.
 	lobby.joinCode = Matchmaking.registerJoinCode()
@@ -346,6 +433,7 @@ while not lobby.started do
 end
 Matchmaking.unpublish()
 lobbyConn:Disconnect()
+voteConn:Disconnect()
 joinConn:Disconnect()
 leaveConn:Disconnect()
 Net.Lobby:FireAllClients({ starting = true })

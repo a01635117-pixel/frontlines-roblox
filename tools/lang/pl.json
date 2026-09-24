@@ -230,5 +230,6 @@
   "Russia": "Rosja",
   "Scandinavia": "Skandynawia",
   "United States": "Stany Zjednoczone",
-  "World Inverted": "Odwrócony świat"
+  "World Inverted": "Odwrócony świat",
+  "Vote for the map and mode by clicking them — the most votes win. Leading: {map}.": "Kliknij mapę i tryb, aby na nie zagłosować – wygrywa najwięcej głosów. Prowadzi: {map}."
 }
