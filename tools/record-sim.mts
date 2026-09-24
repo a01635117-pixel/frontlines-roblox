@@ -154,6 +154,12 @@ const BLAST = { [UnitType.AtomBomb]: 30, [UnitType.HydrogenBomb]: 100, [UnitType
 let prevNukes = new Map<number, any>();
 const blastLog: string[] = [];
 const trails = new Map<number, number[][]>();
+// Sound cues for tools/add-audio.mjs: { f: output frame, cue: upstream SoundEffect name }.
+const events: { f: number; cue: string }[] = [];
+const inCrop = (t: number) => { const x = gameMap.x(t), y = gameMap.y(t); return x >= CX && x < CX + CW && y >= CY && y < CY + CH; };
+const LAUNCH_CUE: Record<string, string> = { [UnitType.AtomBomb]: "atom-launch", [UnitType.HydrogenBomb]: "hydrogen-launch", [UnitType.MIRV]: "mirv-launch", [UnitType.MIRVWarhead]: "mirv-launch" };
+// (A MIRV splits on the tick it is launched, so the recorder only ever sees its warheads.)
+let aliveBefore = -1;
 
 function renderFrame() {
   const owner = new Uint16Array(CW * CH);
@@ -262,7 +268,17 @@ for (let tick = 0; tick < TICKS; tick++) {
       const t = u.targetTile();
       blasts.push({ x: gameMap.x(t), y: gameMap.y(t), r: BLAST[u.type()] ?? 30, age: 0 });
       blastLog.push(`${tick}:${u.type()}@${gameMap.x(t)},${gameMap.y(t)}`);
+      if (inCrop(t)) events.push({ f: frames, cue: u.type() === UnitType.HydrogenBomb ? "hydrogen-hit" : "atom-hit" });
     }
+  }
+  for (const [id, u] of now) {
+    const cue = LAUNCH_CUE[u.type()];
+    if (!prevNukes.has(id) && cue && (inCrop(u.tile()) || (u.targetTile?.() != null && inCrop(u.targetTile())))) events.push({ f: frames, cue });
+  }
+  if (tick === 0 || recordTick(tick)) {
+    const alive = game.players().filter((p: any) => p.isAlive()).length;
+    if (aliveBefore >= 0 && alive < aliveBefore) events.push({ f: frames, cue: "conquered" });
+    aliveBefore = alive;
   }
   prevNukes = now;
   for (const id of [...trails.keys()]) if (!now.has(id)) trails.delete(id);
@@ -288,4 +304,5 @@ for (let i = 0; i < 60; i++) await write(frame);
 ff.stdin.end();
 await new Promise((r) => ff.on("close", r));
 console.error(`done: ${frames} frames -> ${OUT}`);
+fs.writeFileSync(OUT + ".events.json", JSON.stringify({ fps: 30, frames: frames + 60, winner: !!game.getWinner?.(), events }));
 console.error(`blasts (${blastLog.length}): ${blastLog.slice(0, 60).join(" ")}`);
