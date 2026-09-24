@@ -195,6 +195,26 @@ function LobbyScreen.new(gui: ScreenGui, net)
 	end)
 	self.startButton = start
 
+	-- Phones in landscape (~360 px tall): smaller title, no subtitle, a lower
+	-- footer, so the settings list keeps most of the height.
+	local function layout()
+		local vp = workspace.CurrentCamera.ViewportSize
+		local compact = vp.Y < 500
+		modal.Size = if compact then UDim2.new(1, -16, 1, -44) else UDim2.new(1, -32, 1, -90)
+		modal.Position = if compact then UDim2.new(0.5, 0, 0.5, -8) else UDim2.fromScale(0.5, 0.52)
+		title.TextSize = if compact then 18 else 22
+		title.Position = if compact then UDim2.fromOffset(14, 8) else UDim2.fromOffset(20, 14)
+		sub.Visible = not compact
+		actions.Position = if compact then UDim2.new(1, -12, 0, 6) else UDim2.new(1, -16, 0, 14)
+		scroll.Position = if compact then UDim2.fromOffset(10, 40) else UDim2.fromOffset(16, 70)
+		scroll.Size = if compact then UDim2.new(1, -20, 1, -92) else UDim2.new(1, -32, 1, -140)
+		start.Size = if compact then UDim2.fromOffset(150, 36) else UDim2.fromOffset(180, 44)
+		start.Position = if compact then UDim2.new(1, -12, 1, -8) else UDim2.new(1, -20, 1, -14)
+		status.Position = if compact then UDim2.new(0, 14, 1, -16) else UDim2.new(0, 20, 1, -22)
+	end
+	layout()
+	workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(layout)
+
 	-- Credits footer (AGPL section 7(b): the copyright notice stays visible).
 	local GameInfo = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("GameInfo"))
 	local credits = Style.text(shade, "Credits", `{GameInfo.COPYRIGHT} · {GameInfo.LICENSE} · Source: {GameInfo.SOURCE_URL}`, 11, F.medium, C.gray400)
@@ -532,6 +552,24 @@ function LobbyScreen:_build()
 	plist.Size = UDim2.new(1, 0, 0, 0)
 	plist.TextXAlignment = Enum.TextXAlignment.Left
 	controls.players = plist
+
+	-- Leaderboard: your stats and the global top 10 by wins.
+	local lb = self:_section("Leaderboard", 11)
+	local mine = Style.text(lb, "Mine", "", 14, F.bold, C.gray300)
+	mine.LayoutOrder = 1
+	mine.ZIndex = 83
+	mine.AutomaticSize = Enum.AutomaticSize.Y
+	mine.Size = UDim2.new(1, 0, 0, 0)
+	mine.TextXAlignment = Enum.TextXAlignment.Left
+	controls.myStats = mine
+	local topList = Style.text(lb, "Top", "", 14, F.medium, C.gray300)
+	topList.LayoutOrder = 2
+	topList.ZIndex = 83
+	topList.TextWrapped = true
+	topList.AutomaticSize = Enum.AutomaticSize.Y
+	topList.Size = UDim2.new(1, 0, 0, 0)
+	topList.TextXAlignment = Enum.TextXAlignment.Left
+	controls.topList = topList
 end
 
 local SLIDER_MAX = 400
@@ -648,6 +686,15 @@ function LobbyScreen:_refresh()
 		u.label.Text = if NOT_PORTED[unit] then Lang.t("{unit} (soon)", { unit = Lang.t(unit) }) else unit
 	end
 	c.players.Text = table.concat(st.players or {}, ", ")
+	local my = st.stats and st.stats[tostring(Players.LocalPlayer.UserId)]
+	c.myStats.Text = if my
+		then Lang.t("You: {games} matches, {wins} wins, best {best}% of the map", { games = my.games or 0, wins = my.wins or 0, best = my.bestPct or 0 })
+		else ""
+	local rows = {}
+	for i, r in st.top or {} do
+		table.insert(rows, string.format("%d. %s — %d", i, r.name, r.wins))
+	end
+	c.topList.Text = if #rows > 0 then Lang.t("Most wins:") .. "\n" .. table.concat(rows, "\n") else Lang.t("Most wins: nobody yet — be the first!")
 	local hostName = "?"
 	local hp = st.hostUserId and Players:GetPlayerByUserId(st.hostUserId)
 	if hp then
@@ -664,7 +711,7 @@ function LobbyScreen:_refresh()
 	mark(c.play.solo, solo)
 	mark(c.play.multi, public)
 	for title, sec in self.sectionFrames or {} do
-		if title ~= "Map" and title ~= "Mode" and title ~= "Players" then
+		if title ~= "Map" and title ~= "Mode" and title ~= "Players" and title ~= "Leaderboard" then
 			sec.Visible = not public
 		end
 	end

@@ -56,7 +56,7 @@ license:
 ## Sound effects — CC BY-SA 4.0
 
 The sound effects played by `src/client/Audio.luau` are OpenFrontIO's
-`resources/sounds/effects/*.mp3` (CC BY-SA 4.0, attribution: **OpenFront**),
+`resources/sounds/effects/*.mp3` and `resources/sounds/ambience/*.mp3` (CC BY-SA 4.0, attribution: **OpenFront**),
 uploaded unmodified as Roblox audio assets (IDs listed in `Audio.luau`). The
 promo videos in `promo/` use the same effects and are distributed under the
 same license.

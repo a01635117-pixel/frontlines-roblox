@@ -1185,6 +1185,41 @@ if RunService:IsStudio() then
 	end
 end
 
+-- Structure ambience (AmbienceController): zoomed in (8+ px per tile) near a
+-- city / factory / silo / SAM, the matching loop fades in with the zoom.
+local AMBIENCE_BY_TYPE = { City = "city", Factory = "factory", ["Missile Silo"] = "missile-silo", ["SAM Launcher"] = "sam-silo" }
+local AMBIENCE_ZOOM, AMBIENCE_MAX_ZOOM, AMBIENCE_PEAK, AMBIENCE_RANGE = 8, 20, 0.3, 20
+local lastAmbience, lastAmbienceGain = nil, 0
+task.spawn(function()
+	while gui.Parent do
+		task.wait(0.25)
+		local track, gain = nil, 0
+		if camera.zoom >= AMBIENCE_ZOOM then
+			local vp = workspace.CurrentCamera.ViewportSize
+			local cx, cy = camera:mapPos(Vector2.new(vp.X / 2, vp.Y / 2))
+			local best = AMBIENCE_RANGE * AMBIENCE_RANGE + 1
+			for _, e in unitLayer.units do
+				local kind = e.isStructure and AMBIENCE_BY_TYPE[e.unitType]
+				if kind then
+					local dx, dy = gameMap:x(e.pos) - cx, gameMap:y(e.pos) - cy
+					local d2 = dx * dx + dy * dy
+					if d2 < best then
+						best, track = d2, kind
+					end
+				end
+			end
+			if track then
+				gain = AMBIENCE_PEAK * math.clamp((camera.zoom - AMBIENCE_ZOOM) / (AMBIENCE_MAX_ZOOM - AMBIENCE_ZOOM), 0, 1)
+			end
+		end
+		if track ~= lastAmbience or math.abs(gain - lastAmbienceGain) > 0.01 then
+			lastAmbience, lastAmbienceGain = track, gain
+			Audio.setAmbience(track, gain)
+		end
+	end
+	Audio.setAmbience(nil, 0)
+end)
+
 -- Frame loop ------------------------------------------------------------------------
 
 RunService.RenderStepped:Connect(function()

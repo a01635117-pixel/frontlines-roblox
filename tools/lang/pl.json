@@ -302,5 +302,8 @@
   "Music": "Muzyka",
   "Effects": "Efekty",
   "Mute all": "Wycisz wszystko",
-  "Unmute": "Włącz dźwięk"
+  "Unmute": "Włącz dźwięk",
+  "You: {games} matches, {wins} wins, best {best}% of the map": "Ty: {games} meczów, {wins} wygranych, najlepiej {best}% mapy",
+  "Most wins:": "Najwięcej wygranych:",
+  "Most wins: nobody yet — be the first!": "Najwięcej wygranych: jeszcze nikt — bądź pierwszy!"
 }

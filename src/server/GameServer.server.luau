@@ -47,6 +47,7 @@ end
 -- modules that outlast match restarts; start() is idempotent.
 local Profiles = require(script.Parent.Profiles)
 local ShopService = require(script.Parent.ShopService)
+local Progress = require(script.Parent.Progress)
 Profiles.start()
 ShopService.start()
 
@@ -294,6 +295,18 @@ local function lobbyState()
 		canMatchmake = Matchmaking.available(),
 		votes = if lobby.mode == "public" then { map = tally("map"), mode = tally("mode") } else nil,
 		hostAdvanced = hostAdvancedFn and hostAdvancedFn(lobby.hostUserId),
+		-- Leaderboard section: global top wins + the stats of everyone here.
+		top = Progress.top(),
+		stats = (function()
+			local out = {}
+			for _, p in Players:GetPlayers() do
+				local data = Profiles.get(p.UserId)
+				if data then
+					out[tostring(p.UserId)] = data.stats
+				end
+			end
+			return out
+		end)(),
 	}
 end
 
@@ -1415,6 +1428,9 @@ local planSent = {}
 -- Rail changes this tick (see railroads).
 local railAdds, railRemoves = {}, {}
 
+local nukeTypes = { ["Atom Bomb"] = true, ["Hydrogen Bomb"] = true, MIRV = true }
+local nukeSeen = {}
+
 local function handleUpdates(updates)
 	table.clear(unitChanges)
 	table.clear(unitOrder)
@@ -1422,6 +1438,14 @@ local function handleUpdates(updates)
 	table.clear(railRemoves)
 	for _, u in updates do
 		if u.type == "Unit" then
+			-- "Nuclear Option" badge: a human's first launch.
+			if u.isActive and nukeTypes[u.unitType] and not nukeSeen[u.id] then
+				nukeSeen[u.id] = true
+				local owner = mg:playerBySmallID(u.ownerID)
+				if owner and owner:isPlayer() and owner:type() == "HUMAN" then
+					Progress.award(tonumber(owner:clientID()) :: number, "nuke")
+				end
+			end
 			local plan = mg:motionPlan(u.id)
 			if plan and u.isActive and planSent[u.id] and unitChanges[u.id] == nil then
 				continue -- in flight: the client already has the plan
@@ -1485,6 +1509,16 @@ local function handleUpdates(updates)
 			table.insert(railAdds, { id = u.newId2, tiles = u.tiles2 })
 		end
 		if u.type == "SpawnPhaseEnd" then
+			-- A match counts as played once the spawn phase is over.
+			for _, p in mg:players() do
+				local userId = p:type() == "HUMAN" and tonumber(p:clientID())
+				local data = userId and Profiles.get(userId)
+				if data then
+					data.stats.games += 1
+					Profiles.markDirty(userId)
+					Progress.checkStats(userId, data.stats)
+				end
+			end
 			Net.Event:FireAllClients({ type = "SpawnPhaseEnd", tick = u.startTick })
 		elseif u.type == "Win" then
 			local w = u.winner
@@ -1794,10 +1828,11 @@ local function recordStats()
 		local userId = p:type() == "HUMAN" and tonumber(p:clientID())
 		local data = userId and Profiles.get(userId)
 		if data then
-			data.stats.games += 1
 			if winner == p then
 				data.stats.wins += 1
+				Progress.recordWins(userId, data.stats.wins)
 			end
+			Progress.checkStats(userId, data.stats)
 			data.stats.bestPct = math.max(data.stats.bestPct, math.floor(p:numTilesOwned() / math.max(1, land) * 1000) / 10)
 			Profiles.markDirty(userId)
 		end

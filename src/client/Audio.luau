@@ -36,6 +36,15 @@ local EFFECTS = {
 -- Same morse-code cue as the alliance request (Sounds.ts "message").
 EFFECTS.message = EFFECTS["alliance-suggested"]
 
+-- Structure ambience loops (resources/sounds/ambience, CC BY-SA 4.0).
+local AMBIENCE = {
+	city = 95117857648088,
+	factory = 135387979035885,
+	["missile-silo"] = 93923878967591,
+	["sam-silo"] = 103776496984331,
+}
+local AMBIENCE_FADE = 0.5 -- SoundManager AMBIENCE_FADE_MS
+
 -- APM library (APMOfficial), free for use in Roblox experiences.
 local MUSIC = {
 	1842642981, -- Fantastic Journey
@@ -105,6 +114,46 @@ function Audio.play(name: string, minGap: number?)
 			s:Destroy()
 		end
 	end)
+end
+
+-- Ambience (AmbienceController + SoundManager.setAmbience): one looping track
+-- at a time, crossfaded; gain 0..0.3 from the zoom level. Follows the
+-- effects volume.
+local TweenService = game:GetService("TweenService")
+local ambienceSounds: { [string]: Sound } = {}
+local currentAmbience: string? = nil
+function Audio.setAmbience(track: string?, gain: number)
+	local target = gain * (if muted then 0 else volume.effects)
+	if track ~= currentAmbience and currentAmbience then
+		local old = ambienceSounds[currentAmbience]
+		if old then
+			local tw = TweenService:Create(old, TweenInfo.new(AMBIENCE_FADE), { Volume = 0 })
+			tw.Completed:Once(function()
+				if old.Volume == 0 then
+					old:Stop()
+				end
+			end)
+			tw:Play()
+		end
+	end
+	currentAmbience = track
+	if track == nil or AMBIENCE[track] == nil then
+		return
+	end
+	local s = ambienceSounds[track]
+	if s == nil then
+		s = Instance.new("Sound")
+		s.Name = "Ambience_" .. track
+		s.SoundId = "rbxassetid://" .. AMBIENCE[track]
+		s.Looped = true
+		s.Volume = 0
+		s.Parent = SoundService
+		ambienceSounds[track] = s
+	end
+	if not s.IsPlaying then
+		s:Play()
+	end
+	TweenService:Create(s, TweenInfo.new(AMBIENCE_FADE), { Volume = target }):Play()
 end
 
 -- Looping playlist; started once per client (Main is re-cloned every match,
