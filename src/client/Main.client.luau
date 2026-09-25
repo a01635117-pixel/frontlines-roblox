@@ -1272,6 +1272,44 @@ task.spawn(function()
 	Audio.setAmbience(nil, 0)
 end)
 
+-- Performance telemetry (server Telemetry.luau): every 20 s this client's
+-- frame rate, worst frame, ping, received data and memory.
+task.spawn(function()
+	local Stats = game:GetService("Stats")
+	local UIS = game:GetService("UserInputService")
+	while gui.Parent do
+		local frames, worst, minFps = 0, 0, math.huge
+		local secondFrames, secondStart = 0, os.clock()
+		local conn = RunService.RenderStepped:Connect(function(dt)
+			frames += 1
+			secondFrames += 1
+			if dt > worst then
+				worst = dt
+			end
+			local now = os.clock()
+			if now - secondStart >= 1 then
+				minFps = math.min(minFps, secondFrames / (now - secondStart))
+				secondFrames, secondStart = 0, now
+			end
+		end)
+		task.wait(20)
+		conn:Disconnect()
+		if not gui.Parent then
+			break
+		end
+		Net.Intent:FireServer({
+			type = "telemetry",
+			fps = frames / 20,
+			minFps = if minFps == math.huge then 0 else minFps,
+			maxFrame = worst * 1000,
+			ping = player:GetNetworkPing() * 1000,
+			recv = Stats.DataReceiveKbps,
+			mem = Stats:GetTotalMemoryUsageMb(),
+			touch = UIS.TouchEnabled and not UIS.KeyboardEnabled,
+		})
+	end
+end)
+
 -- Frame loop ------------------------------------------------------------------------
 
 RunService.RenderStepped:Connect(function()

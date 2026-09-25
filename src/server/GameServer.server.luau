@@ -51,6 +51,7 @@ end
 local Profiles = require(script.Parent.Profiles)
 local ShopService = require(script.Parent.ShopService)
 local Progress = require(script.Parent.Progress)
+local Telemetry = require(script.Parent.Telemetry)
 Profiles.start()
 ShopService.start()
 
@@ -89,6 +90,7 @@ local function allow(player: Player, kind: string, perSecond: number, burst: num
 	return true
 end
 Players.PlayerRemoving:Connect(function(player)
+	Telemetry.removePlayer(player)
 	local prefix = player.UserId .. ":"
 	for key in buckets do
 		if string.sub(key, 1, #prefix) == prefix then
@@ -1060,6 +1062,12 @@ Net.Intent.OnServerEvent:Connect(function(player: Player, intent)
 		return
 	end
 	local clientID = clientIDOf(player)
+	if intent.type == "telemetry" then
+		if allow(player, "telemetry", 0.2, 2) then
+			Telemetry.client(player, intent)
+		end
+		return
+	end
 	if intent.type == "tutorial_dismiss" then
 		saveSetting(player, "tutorialDismissed", true)
 		return
@@ -1937,6 +1945,7 @@ RunService.Heartbeat:Connect(function(dt)
 		end
 		-- Once a minute: tick cost summary in the server log (F9 console on live
 		-- servers), for diagnosing lag reports.
+		Telemetry.tick(ms)
 		perfWindow.n += 1
 		perfWindow.total += ms
 		perfWindow.max = math.max(perfWindow.max, ms)
@@ -1946,6 +1955,13 @@ RunService.Heartbeat:Connect(function(dt)
 		if os.clock() - perfWindow.t >= 60 then
 			print(string.format("[Perf] tick %d: avg %.1f ms, max %.0f ms, %d/%d ticks over 100 ms, %d units, %d humans, Lua %d MB", mg:ticks(), perfWindow.total / perfWindow.n, perfWindow.max, perfWindow.slow, perfWindow.n, #mg:units(), #Players:GetPlayers(), collectgarbage("count") // 1024))
 			perfWindow.n, perfWindow.total, perfWindow.max, perfWindow.slow, perfWindow.t = 0, 0, 0, 0, os.clock()
+			local alive = 0
+			for _, pl in mg:players() do
+				if pl:type() == "HUMAN" then
+					alive += 1
+				end
+			end
+			Telemetry.flush({ mode = lobby.mode, map = MAP_ID, tick = mg:ticks(), units = #mg:units(), players = #Players:GetPlayers(), alive = alive })
 		end
 		if not running then
 			endMatch()
