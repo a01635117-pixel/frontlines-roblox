@@ -428,6 +428,14 @@ function UnitLayer:warshipsNear(ownerID: number, tile: number, radius: number): 
 	return ids
 end
 
+function UnitLayer:moveMarker(tile: number)
+	local ring, stroke = circle(self.container, "MoveMarker", Color3.fromRGB(34, 211, 238), false)
+	stroke.Thickness = 2.5
+	ring.ZIndex = 9
+	self.markers = self.markers or {}
+	table.insert(self.markers, { ring = ring, stroke = stroke, tile = tile, t0 = os.clock() })
+end
+
 function UnitLayer:setSelected(id: number?)
 	self.selected = id
 	for uid, e in self.units do
@@ -608,6 +616,23 @@ function UnitLayer:render()
 				tg.outerStroke.Transparency = 1 - a
 			end
 		end
+	end
+	if self.markers then
+		local keep = {}
+		for _, m in self.markers do
+			local a = (now - m.t0) / 1.0
+			if a >= 1 then
+				m.ring:Destroy()
+			else
+				local c = camera:screenPos(map:x(m.tile), map:y(m.tile))
+				local d = 34 * (1 - 0.6 * a)
+				m.ring.Position = UDim2.fromOffset(c.X, c.Y)
+				m.ring.Size = UDim2.fromOffset(d, d)
+				m.stroke.Transparency = a
+				table.insert(keep, m)
+			end
+		end
+		self.markers = if #keep > 0 then keep else nil
 	end
 	if self.explosions then
 		local keep = {}

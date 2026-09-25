@@ -1065,6 +1065,32 @@ end)
 -- Input ----------------------------------------------------------------------------
 
 local WARSHIP_SELECTION_RADIUS = 10
+-- Selection radius in tiles: at least ~28 screen pixels, so a warship can be
+-- picked on a zoomed-out map (10 tiles was ~13 px on the World map).
+local function warshipPickRadius(): number
+	return math.max(WARSHIP_SELECTION_RADIUS, 28 / math.max(camera.zoom, 0.01))
+end
+-- Nearest water tile to `tile` within `r` tiles (coast clicks), or nil.
+local function nearestWater(tile: number, r: number): number?
+	if gameMap:isWater(tile) then
+		return tile
+	end
+	local x0, y0 = gameMap:x(tile), gameMap:y(tile)
+	local best, bestD = nil, math.huge
+	for dy = -r, r do
+		for dx = -r, r do
+			local x, y = x0 + dx, y0 + dy
+			if x >= 0 and y >= 0 and x < gameMap:width() and y < gameMap:height() then
+				local t = gameMap:ref(x, y)
+				local d = dx * dx + dy * dy
+				if d < bestD and gameMap:isWater(t) then
+					best, bestD = t, d
+				end
+			end
+		end
+	end
+	return best
+end
 local selectedWarship: number? = nil
 
 camera.onClick = function(p: Vector2)
@@ -1090,24 +1116,33 @@ camera.onClick = function(p: Vector2)
 		end
 		return
 	end
-	-- Warship select / move (WarshipSelectionController): water clicks only.
-	if gameMap:isWater(tile) then
-		if selectedWarship and unitLayer:isActiveUnit(selectedWarship) then
-			Net.Intent:FireServer({ type = "move_warship", unitIds = { selectedWarship }, tile = tile })
+	-- Warship select / move (WarshipSelectionController). Roblox port: a ship
+	-- near the coast can be picked even when the click lands on shore, and a
+	-- destination on land near water sends it to the closest water tile.
+	if selectedWarship and unitLayer:isActiveUnit(selectedWarship) then
+		local dst = nearestWater(tile, 6)
+		if dst then
+			Net.Intent:FireServer({ type = "move_warship", unitIds = { selectedWarship }, tile = dst })
+			unitLayer:moveMarker(dst)
+			Audio.play("click")
 			selectedWarship = nil
 			unitLayer:setSelected(nil)
 			return
 		end
-		local near = unitLayer:warshipsNear(mySmallID, tile, WARSHIP_SELECTION_RADIUS)
+		-- Deep inland: drop the selection and treat it as a normal click.
+		selectedWarship = nil
+		unitLayer:setSelected(nil)
+	else
+		local near = unitLayer:warshipsNear(mySmallID, tile, warshipPickRadius())
 		if near[1] then
 			selectedWarship = near[1]
 			unitLayer:setSelected(selectedWarship)
+			Audio.play("click")
+			return
 		end
-		return
-	end
-	if selectedWarship then
-		selectedWarship = nil
-		unitLayer:setSelected(nil)
+		if gameMap:isWater(tile) then
+			return
+		end
 	end
 	-- The server decides land attack vs boat, exactly like the upstream client.
 	Net.Intent:FireServer({ type = "click", tile = tile, ratio = controlPanel.ratio })
@@ -1157,7 +1192,8 @@ camera.onTap = function(p: Vector2)
 		camera.onClick(p)
 		return
 	end
-	if selectedWarship then
+	-- A selected warship, or one close to the tap: warship controls, not the radial menu.
+	if selectedWarship or (mySmallID and unitLayer:warshipsNear(mySmallID, tile, warshipPickRadius())[1]) then
 		camera.onClick(p)
 		return
 	end
