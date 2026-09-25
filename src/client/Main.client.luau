@@ -1277,6 +1277,20 @@ end)
 task.spawn(function()
 	local Stats = game:GetService("Stats")
 	local UIS = game:GetService("UserInputService")
+	-- Gaps between stats updates (Net.Stats, sent every 0.5 s whatever happens
+	-- on the map) as this client sees them: the "map stops, then jumps" symptom.
+	local lastTick, gapMax, gaps = os.clock(), 0, 0
+	local tickConn = Net.Stats.OnClientEvent:Connect(function()
+		local now = os.clock()
+		local gap = now - lastTick
+		lastTick = now
+		if gap > gapMax then
+			gapMax = gap
+		end
+		if gap > 1.0 then
+			gaps += 1
+		end
+	end)
 	while gui.Parent do
 		local frames, worst, minFps = 0, 0, math.huge
 		local secondFrames, secondStart = 0, os.clock()
@@ -1295,6 +1309,7 @@ task.spawn(function()
 		task.wait(20)
 		conn:Disconnect()
 		if not gui.Parent then
+			tickConn:Disconnect()
 			break
 		end
 		Net.Intent:FireServer({
@@ -1306,7 +1321,10 @@ task.spawn(function()
 			recv = Stats.DataReceiveKbps,
 			mem = Stats:GetTotalMemoryUsageMb(),
 			touch = UIS.TouchEnabled and not UIS.KeyboardEnabled,
+			gapMax = gapMax * 1000,
+			gaps = gaps,
 		})
+		gapMax, gaps = 0, 0
 	end
 end)
 

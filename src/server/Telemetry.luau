@@ -20,7 +20,17 @@ if not RunService:IsStudio() then
 	end)
 end
 
-local window = { n = 0, total = 0, max = 0, slow = 0 }
+local window = { n = 0, total = 0, max = 0, slow = 0, frameMax = 0, frameSlow = 0 }
+-- Whole server frames (Heartbeat dt): catches stalls outside the tick itself
+-- (GC, engine work) that freeze replication for everyone.
+game:GetService("RunService").Heartbeat:Connect(function(dt)
+	if dt > window.frameMax then
+		window.frameMax = dt
+	end
+	if dt > 0.25 then
+		window.frameSlow += 1
+	end
+end)
 local clients: { [Player]: any } = {}
 local rows = {}
 local jobKey = "job_" .. (if game.JobId ~= "" then game.JobId else "studio")
@@ -57,6 +67,8 @@ function Telemetry.client(player: Player, r)
 		recv = num(r.recv, 0, 1e6),
 		mem = num(r.mem, 0, 1e6),
 		touch = r.touch == true,
+		gapMax = num(r.gapMax, 0, 60000),
+		gaps = num(r.gaps, 0, 10000),
 		t = os.clock(),
 	}
 end
@@ -68,14 +80,14 @@ end
 -- Called about once a minute with match context.
 function Telemetry.flush(ctx)
 	local w = window
-	window = { n = 0, total = 0, max = 0, slow = 0 }
+	window = { n = 0, total = 0, max = 0, slow = 0, frameMax = 0, frameSlow = 0 }
 	if w.n == 0 then
 		return
 	end
 	local cl = {}
 	for _, c in clients do
 		if os.clock() - c.t < 90 then
-			table.insert(cl, { c.fps, c.minFps, c.maxFrame, c.ping, c.recv, c.mem, c.touch })
+			table.insert(cl, { c.fps, c.minFps, c.maxFrame, c.ping, c.recv, c.mem, c.touch, c.gapMax, c.gaps })
 		end
 	end
 	local row = {
@@ -87,10 +99,12 @@ function Telemetry.flush(ctx)
 		max = math.floor(w.max),
 		slow = w.slow,
 		n = w.n,
+		frameMax = math.floor(w.frameMax * 1000),
+		frameSlow = w.frameSlow,
 		units = ctx.units,
 		players = ctx.players,
 		alive = ctx.alive,
-		clients = cl, -- { fps, minFps, maxFrameMs, pingMs, recvKbps, memMB, touch }
+		clients = cl, -- { fps, minFps, maxFrameMs, pingMs, recvKbps, memMB, touch, maxStatsGapMs (normal 500), statsGapsOver1s }
 	}
 	table.insert(rows, row)
 	if #rows > 30 then
