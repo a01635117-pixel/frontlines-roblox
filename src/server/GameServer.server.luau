@@ -624,6 +624,7 @@ local function nameRows(): { { number } }
 	return rows
 end
 
+local nameCursor = 0
 local function updateNames(wasInSpawnPhase: boolean)
 	local changed = {}
 	local function set(p, v)
@@ -641,9 +642,19 @@ local function updateNames(wasInSpawnPhase: boolean)
 		end
 	end
 	local spawnJustEnded = wasInSpawnPhase and not mg:inSpawnPhase()
-	if spawnJustEnded or mg:ticks() < 3 or mg:ticks() % 30 == 0 then
-		for _, p in mg:players() do
+	local players = mg:players()
+	if spawnJustEnded or mg:ticks() < 3 then
+		for _, p in players do
 			set(p, NameBoxCalculator.placeName(mg, p))
+		end
+	elseif #players > 0 then
+		-- Every name is re-placed once per 30 ticks, like upstream, but spread
+		-- over the ticks: all ~320 at once took ~80 ms and made the map hitch
+		-- every 3 s.
+		local count = math.ceil(#players / 30)
+		for _ = 1, count do
+			nameCursor = nameCursor % #players + 1
+			set(players[nameCursor], NameBoxCalculator.placeName(mg, players[nameCursor]))
 		end
 	end
 	if #changed > 0 then

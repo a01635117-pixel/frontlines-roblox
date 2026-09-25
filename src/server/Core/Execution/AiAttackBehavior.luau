@@ -188,6 +188,7 @@ function AiAttackBehavior:_sendBoatAttackToNearbyTerraNullius(): boolean
 		return false
 	end
 	local shores = self:_shoreTiles(player)
+	local checks = 0 -- Roblox port: at most 8 water-path checks per turn (see MAX_BOAT_TARGET_CHECKS)
 	for i = 1, #shores, 10 do
 		local border = shores[i]
 		local bx, by = game:x(border), game:y(border)
@@ -205,7 +206,11 @@ function AiAttackBehavior:_sendBoatAttackToNearbyTerraNullius(): boolean
 			if not game:isLand(tile) or game:isImpassable(tile) or game:hasOwner(tile) or game:hasFallout(tile) then
 				continue
 			end
+			checks += 1
 			if not TransportShipUtils.canBuildTransportShip(game, player, tile) then
+				if checks >= 8 then
+					return false
+				end
 				continue
 			end
 			local troops = math.min(player:troops() / 5, self:_troopSendCapForExpansion())
@@ -542,10 +547,13 @@ function AiAttackBehavior:_attackWithRandomBoat(borderingEnemies)
 	game:addExecution(TransportShipExecution.new(player, dst, troops))
 end
 
+local MAX_BOAT_TARGET_CHECKS = 8
+
 function AiAttackBehavior:_findRandomBoatTarget(tile: number, borderingEnemies, highInterestOnly: boolean): number?
 	local game, player = self.game, self.player
 	local x, y = game:x(tile), game:y(tile)
 	local unreachablePlayers = {}
+	local expensiveChecks = 0
 	for _ = 1, 500 do
 		local randX = self.random:nextInt(x - 150, x + 150)
 		local randY = self.random:nextInt(y - 150, y + 150)
@@ -581,9 +589,16 @@ function AiAttackBehavior:_findRandomBoatTarget(tile: number, borderingEnemies, 
 		if not matchesCriteria then
 			continue
 		end
+		-- Roblox port: canBuildTransportShip searches water paths (several ms
+		-- each); with unreachable land nearby up to 500 of them ran in one turn
+		-- (a 350 ms tick). Give up after 8 failed checks and try next turn.
+		expensiveChecks += 1
 		if TransportShipUtils.canBuildTransportShip(game, player, randTile) == false then
 			if isPlayer then
 				unreachablePlayers[owner:id()] = true
+			end
+			if expensiveChecks >= MAX_BOAT_TARGET_CHECKS then
+				return nil
 			end
 			continue
 		end
